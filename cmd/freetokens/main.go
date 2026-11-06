@@ -42,7 +42,8 @@ Usage:
   freetokens status [--json] [--prompt]
                                     Print hours, sessions and token usage once
   freetokens diagnose               Print setup diagnostics (never prints tokens)
-  freetokens update [--check]       Check GitHub Releases and install a verified newer version
+  freetokens update [--check] [--json] [--scheduled]
+                                    Check GitHub Releases and install a verified newer version
   freetokens config [get | set <key> <value>]
                                     Keys: auto-update (off|notify|auto), refresh-minutes, show-timers (true|false)
   freetokens autostart [on|off]     Start the tray at login
@@ -220,14 +221,38 @@ func runDiagnose() error {
 	return enc.Encode(d)
 }
 
+// updateResult is the --json form of "freetokens update", read by the macOS app.
+type updateResult struct {
+	*update.Info
+	Installed bool `json:"installed"`
+	// Skipped is "off" or "not-due" when a --scheduled check didn't run.
+	Skipped string `json:"skipped,omitempty"`
+	Error   string `json:"error,omitempty"`
+}
+
 func runUpdate(args []string) error {
 	fs := flag.NewFlagSet("update", flag.ContinueOnError)
 	checkOnly := fs.Bool("check", false, "only report whether an update is available")
+	asJSON := fs.Bool("json", false, "print the result as JSON")
+	scheduled := fs.Bool("scheduled", false, "follow the auto-update setting: check at most daily, install only with auto")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	ctx, cancel := signalContext()
 	defer cancel()
+	if *asJSON {
+		log.SetOutput(io.Discard)
+		res := updateJSON(ctx, *checkOnly, *scheduled)
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(res); err != nil {
+			return err
+		}
+		if res.Error != "" {
+			os.Exit(1)
+		}
+		return nil
+	}
 	info, err := update.Check(ctx, version)
 	if err != nil {
 		return err
@@ -252,8 +277,52 @@ func runUpdate(args []string) error {
 	if err := update.Apply(ctx, info); err != nil {
 		return err
 	}
+	if info.App != "" {
+		fmt.Printf("Updated %s to v%s. Quit and reopen FreeTokens to use it.\n", info.App, info.Latest)
+		return nil
+	}
 	fmt.Printf("Updated to v%s. Restart the tray (Quit, then reopen) to use it.\n", info.Latest)
 	return nil
+}
+
+func updateJSON(ctx context.Context, checkOnly, scheduled bool) updateResult {
+	res := updateResult{Info: &update.Info{Current: update.Normalize(version)}}
+	var store *config.Store
+	if scheduled {
+		var err error
+		if store, err = config.DefaultStore(); err != nil {
+			res.Error = err.Error()
+			return res
+		}
+		c := store.Load()
+		if c.AutoUpdate == config.UpdateOff || !update.IsRelease(version) {
+			res.Skipped = "off"
+			return res
+		}
+		if since := time.Since(c.LastUpdateCheck); since >= 0 && since < update.CheckInterval {
+			res.Skipped = "not-due"
+			return res
+		}
+		checkOnly = c.AutoUpdate != config.UpdateAuto
+	}
+	info, err := update.Check(ctx, version)
+	if store != nil {
+		_, _ = store.Update(func(c *config.Config) { c.LastUpdateCheck = time.Now() })
+	}
+	if err != nil {
+		res.Error = err.Error()
+		return res
+	}
+	res.Info = info
+	if checkOnly || !info.Available {
+		return res
+	}
+	if err := update.Apply(ctx, info); err != nil {
+		res.Error = err.Error()
+		return res
+	}
+	res.Installed = true
+	return res
 }
 
 func runConfig(args []string) error {

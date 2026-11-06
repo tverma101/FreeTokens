@@ -23,7 +23,10 @@ type Snapshot struct {
 	RefreshedAt time.Time       `json:"refreshedAt"`
 	Quota       *freebuff.Quota `json:"quota,omitempty"`
 	// QuotaError is the live quota failure, if any.
-	QuotaError     string         `json:"quotaError,omitempty"`
+	QuotaError string `json:"quotaError,omitempty"`
+	// QuotaErrorCode classifies QuotaError for UIs: "signed-out", "expired", "approval" (the OS
+	// needs the user to allow keychain access), "network" or "other".
+	QuotaErrorCode string         `json:"quotaErrorCode,omitempty"`
 	HistoryWarning string         `json:"historyWarning,omitempty"`
 	Periods        []usage.Period `json:"periods,omitempty"`
 	Days           []usage.Day    `json:"days,omitempty"`
@@ -93,7 +96,7 @@ func (t *Tracker) Refresh(ctx context.Context, interactive bool) *Snapshot {
 	if auth != nil {
 		t.refreshQuota(ctx, *auth, snap)
 	} else {
-		snap.QuotaError = authErr.Error()
+		snap.setQuotaError(authErr)
 	}
 	if ctx.Err() != nil {
 		return snap
@@ -176,25 +179,48 @@ func (t *Tracker) refreshQuota(ctx context.Context, auth freebuff.Auth, snap *Sn
 	resp, err := t.Client.FetchSession(ctx, auth)
 	if err != nil {
 		t.logOnce("quota", "usage refresh failed: %v", err)
-		snap.QuotaError = freebuff.ErrConnection.Error()
+		snap.setQuotaError(freebuff.ErrConnection)
 		return
 	}
 	switch {
 	case resp.Status == 401:
-		snap.QuotaError = freebuff.ErrTokenInvalid.Error()
+		snap.setQuotaError(freebuff.ErrTokenInvalid)
 		return
 	case (resp.Status < 200 || resp.Status >= 300) && resp.Status != 404:
 		t.logOnce("quota", "usage refresh failed: HTTP %d", resp.Status)
-		snap.QuotaError = freebuff.RequestFailed{Status: resp.Status}.Error()
+		snap.setQuotaError(freebuff.RequestFailed{Status: resp.Status})
 		return
 	}
 	q, err := freebuff.MapQuota(resp.Status, resp.Body)
 	if err != nil {
 		t.logOnce("quota", "usage refresh failed: %v", err)
-		snap.QuotaError = err.Error()
+		snap.setQuotaError(err)
 		return
 	}
 	t.clear("quota")
 	obs := freebuff.Observe(resp.Body)
 	snap.Quota, snap.Observation = q, &obs
+}
+
+func (s *Snapshot) setQuotaError(err error) {
+	s.QuotaError = err.Error()
+	s.QuotaErrorCode = ErrorCode(err)
+}
+
+// ErrorCode classifies a quota or auth error (see Snapshot.QuotaErrorCode).
+func ErrorCode(err error) string {
+	switch {
+	case err == nil:
+		return ""
+	case errors.Is(err, freebuff.ErrNotLoggedIn), errors.Is(err, freebuff.ErrMissingDefaultProfile),
+		errors.Is(err, freebuff.ErrInvalidCredentials):
+		return "signed-out"
+	case errors.Is(err, freebuff.ErrTokenInvalid):
+		return "expired"
+	case errors.Is(err, freebuff.ErrPermissionRequired):
+		return "approval"
+	case errors.Is(err, freebuff.ErrConnection):
+		return "network"
+	}
+	return "other"
 }

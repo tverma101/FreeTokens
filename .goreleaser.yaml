@@ -9,6 +9,8 @@ before:
     - go test ./...
     # Windows icon, version info and manifest (cmd/freetokens/rsrc_windows_*.syso, not committed).
     - go run github.com/tc-hib/go-winres@v0.3.3 make --in winres/winres.json --out cmd/freetokens/rsrc --arch amd64,386,arm64 --product-version={{ .Version }} --file-version={{ .Version }}
+    # FreeTokens.app (SwiftUI menu bar app + universal engine) -> dist-app/FreeTokens-<version>-macOS.zip.
+    - bash scripts/build-macos-app.sh {{ .Version }}
 
 builds:
   - id: darwin
@@ -80,6 +82,9 @@ archives:
 checksum:
   name_template: checksums.txt
   algorithm: sha256
+  # The app updater verifies the app zip against checksums.txt too.
+  extra_files:
+    - glob: ./dist-app/FreeTokens-*-macOS.zip
 
 snapshot:
   version_template: "{{ incpatch .Version }}-SNAPSHOT"
@@ -95,6 +100,8 @@ release:
     name: FreeTokens
   draft: false
   prerelease: auto
+  extra_files:
+    - glob: ./dist-app/FreeTokens-*-macOS.zip
   footer: |
     Verify downloads against `checksums.txt`. The in-app updater does this automatically and only
     runs when you turn it on (Settings → Updates).
