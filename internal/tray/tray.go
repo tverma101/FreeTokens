@@ -31,7 +31,7 @@ const (
 	quotaSlots    = 8
 	sessionSlots  = 6
 	modelSlots    = 15
-	updateEvery   = 24 * time.Hour
+	updateEvery   = update.CheckInterval
 	timerInterval = 15 * time.Second
 )
 

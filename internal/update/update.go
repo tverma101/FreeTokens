@@ -9,12 +9,18 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/creativeprojects/go-selfupdate"
+
+	"github.com/tverma101/FreeTokens/internal/bundle"
 )
 
 // Repo is the GitHub repository that publishes releases.
 const Repo = "tverma101/FreeTokens"
+
+// CheckInterval is how often automatic update checks run.
+const CheckInterval = 24 * time.Hour
 
 // ErrDevBuild means the binary has no release version, so updates can't be compared.
 var ErrDevBuild = errors.New("this is a development build; updates are only available for released versions")
@@ -27,18 +33,25 @@ type Info struct {
 	URL       string `json:"url,omitempty"`
 	AssetName string `json:"asset,omitempty"`
 	Notes     string `json:"notes,omitempty"`
-	release   *selfupdate.Release
+	// App is the FreeTokens.app being updated, when the engine runs inside one.
+	App     string `json:"app,omitempty"`
+	release *selfupdate.Release
 }
 
-func updater() (*selfupdate.Updater, error) {
+func updater(app bool) (*selfupdate.Updater, error) {
 	src, err := selfupdate.NewGitHubSource(selfupdate.GitHubConfig{})
 	if err != nil {
 		return nil, err
 	}
-	return selfupdate.NewUpdater(selfupdate.Config{
+	cfg := selfupdate.Config{
 		Source:    src,
 		Validator: &selfupdate.ChecksumValidator{UniqueFilename: "checksums.txt"},
-	})
+	}
+	if app {
+		// Inside FreeTokens.app the whole bundle is replaced, from the macOS app archive.
+		cfg.Filters = []string{AppAssetPattern}
+	}
+	return selfupdate.NewUpdater(cfg)
 }
 
 // Normalize strips a leading "v"; empty or "dev" means a development build.
@@ -53,7 +66,8 @@ func IsRelease(v string) bool {
 // Check finds the latest release for this OS/arch. It sends one anonymous request to the GitHub API
 // (GITHUB_TOKEN is used if set, for rate limits).
 func Check(ctx context.Context, current string) (*Info, error) {
-	up, err := updater()
+	app := bundle.Current()
+	up, err := updater(app != "")
 	if err != nil {
 		return nil, err
 	}
@@ -61,7 +75,7 @@ func Check(ctx context.Context, current string) (*Info, error) {
 	if err != nil {
 		return nil, fmt.Errorf("checking GitHub releases: %w", err)
 	}
-	info := &Info{Current: Normalize(current)}
+	info := &Info{Current: Normalize(current), App: app}
 	if !found {
 		return info, nil
 	}
@@ -80,11 +94,14 @@ func Apply(ctx context.Context, info *Info) error {
 	if !IsRelease(info.Current) {
 		return ErrDevBuild
 	}
+	if info.App != "" {
+		return applyApp(ctx, info, info.App)
+	}
 	exe, err := selfupdate.ExecutablePath()
 	if err != nil {
 		return fmt.Errorf("locating the running executable: %w", err)
 	}
-	up, err := updater()
+	up, err := updater(false)
 	if err != nil {
 		return err
 	}
