@@ -35,7 +35,8 @@ extract `freetokens` (`freetokens.exe` on Windows) somewhere on your `PATH`.
 | Windows 10+ | `amd64`, `arm64`, `386` |
 | Linux | `amd64`, `arm64`, `armv6`, `armv7`, `386`, `riscv64`, `ppc64le`, `s390x`, `loong64` |
 | FreeBSD | `amd64`, `arm64` |
-| OpenBSD / NetBSD | `amd64` |
+| OpenBSD | `amd64`, `arm64` |
+| NetBSD | `amd64` |
 
 **Windows:** extract the zip to a folder such as `%LOCALAPPDATA%\Programs\FreeTokens`. It holds two
 copies of the same program: `freetokens.exe` for the command line, and `freetokensw.exe`, which

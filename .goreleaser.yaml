@@ -74,6 +74,8 @@ archives:
     # Asset names must end in _<os>_<arch>[vN] for the in-app updater (go-selfupdate).
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}{{ if .Arm }}v{{ .Arm }}{{ end }}"
     files: [README.md, LICENSE, NOTICE]
+    # Windows zips carry freetokens.exe and freetokensw.exe; other platforms have one binary.
+    allow_different_binary_count: true
 
 checksum:
   name_template: checksums.txt
