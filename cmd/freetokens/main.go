@@ -317,14 +317,15 @@ func runAutostart(args []string) error {
 	}
 	switch args[0] {
 	case "on":
-		exe, err := os.Executable()
+		entry, err := autostart.TrayEntry()
 		if err != nil {
 			return err
 		}
-		if resolved, err := filepath.EvalSymlinks(exe); err == nil {
-			exe = resolved
+		if err := autostart.Enable(entry); err != nil {
+			return err
 		}
-		return autostart.Enable(autostart.Entry{Exec: []string{exe, "tray"}})
+		fmt.Printf("FreeTokens will start at login: %s\n", strings.Join(entry.Exec, " "))
+		return nil
 	case "off":
 		return autostart.Disable()
 	}

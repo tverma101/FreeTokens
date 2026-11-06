@@ -17,7 +17,7 @@ const (
 )
 
 var (
-	ErrConnection      = errors.New("couldn't reach Freebuff. Check your connection and try again")
+	ErrConnection      = errors.New("Couldn't reach Freebuff. Check your connection and try again")
 	ErrInvalidResponse = errors.New("Freebuff returned unreadable usage data. Try again later")
 	ErrLocalHistory    = errors.New("FreeTokens couldn't read Freebuff Desktop's measured token history. Refresh again after the current turn finishes")
 )

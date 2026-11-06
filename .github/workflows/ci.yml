@@ -26,10 +26,13 @@ jobs:
       - run: go test ./...
         if: runner.os == 'Windows'
 
-  cross-compile:
+  # Builds the real release archives (every target) without publishing them.
+  package:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
@@ -37,4 +40,53 @@ jobs:
         with:
           distribution: goreleaser
           version: "~> v2"
-          args: build --snapshot --clean
+          args: release --snapshot --clean
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: |
+            dist/*.zip
+            dist/*.tar.gz
+            dist/checksums.txt
+          retention-days: 7
+
+  # Installs an archive the way a user would and exercises every command without a Freebuff
+  # account, using a fake Desktop history to check local usage tracking.
+  install-smoke:
+    needs: package
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, target: linux_amd64.tar.gz }
+          - { os: ubuntu-24.04-arm, target: linux_arm64.tar.gz }
+          - { os: windows-latest, target: windows_amd64.zip }
+          - { os: windows-11-arm, target: windows_arm64.zip }
+          - { os: macos-latest, target: darwin_arm64.tar.gz }
+          - { os: macos-15-intel, target: darwin_amd64.tar.gz }
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - uses: actions/download-artifact@v5
+        with:
+          name: dist
+          path: dist
+      - name: Throwaway home with a fake Desktop history
+        run: |
+          home="$RUNNER_TEMP/home"
+          mkdir -p "$home"
+          go run scripts/mkfixture.go "$home"
+          echo "HOME=$home" >> "$GITHUB_ENV"
+          echo "USERPROFILE=$(cygpath -w "$home" 2>/dev/null || echo "$home")" >> "$GITHUB_ENV"
+      - name: Install and run
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          archive=$(cd dist && ls freetokens_*_${{ matrix.target }})
+          scripts/smoke.sh "$PWD/dist" "$archive"

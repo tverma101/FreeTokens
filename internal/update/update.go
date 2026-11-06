@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/creativeprojects/go-selfupdate"
@@ -93,5 +94,30 @@ func Apply(ctx context.Context, info *Info) error {
 		}
 		return fmt.Errorf("installing %s: %w", info.Latest, err)
 	}
+	// Windows archives ship freetokens.exe and the windowless freetokensw.exe; keep them in step.
+	if sib := sibling(exe); sib != "" {
+		if err := up.UpdateTo(ctx, info.release, sib); err != nil {
+			return fmt.Errorf("installing %s for %s: %w", info.Latest, filepath.Base(sib), err)
+		}
+	}
 	return nil
+}
+
+// sibling returns the other Windows executable in exe's directory, if it is installed.
+func sibling(exe string) string {
+	dir, base := filepath.Split(exe)
+	var other string
+	switch strings.ToLower(base) {
+	case "freetokens.exe":
+		other = "freetokensw.exe"
+	case "freetokensw.exe":
+		other = "freetokens.exe"
+	default:
+		return ""
+	}
+	p := filepath.Join(dir, other)
+	if st, err := os.Stat(p); err != nil || !st.Mode().IsRegular() {
+		return ""
+	}
+	return p
 }

@@ -7,6 +7,8 @@ before:
   hooks:
     - go mod tidy
     - go test ./...
+    # Windows icon, version info and manifest (cmd/freetokens/rsrc_windows_*.syso, not committed).
+    - go run github.com/tc-hib/go-winres@v0.3.3 make --in winres/winres.json --out cmd/freetokens/rsrc --arch amd64,386,arm64 --product-version={{ .Version }} --file-version={{ .Version }}
 
 builds:
   - id: darwin
@@ -52,6 +54,17 @@ builds:
     flags: [-trimpath]
     ldflags: ["-s -w -X main.version={{.Version}} -X main.commit={{.ShortCommit}} -X main.date={{.Date}}"]
 
+  # Same program linked as a Windows GUI app: it starts the tray (or login item) without a console
+  # window. The archive ships it beside freetokens.exe, which stays the command-line tool.
+  - id: windows-gui
+    main: ./cmd/freetokens
+    binary: freetokensw
+    env: [CGO_ENABLED=0]
+    goos: [windows]
+    goarch: [amd64, arm64, "386"]
+    flags: [-trimpath]
+    ldflags: ["-s -w -H windowsgui -X main.version={{.Version}} -X main.commit={{.ShortCommit}} -X main.date={{.Date}}"]
+
 archives:
   - id: default
     formats: [tar.gz]
@@ -61,6 +74,8 @@ archives:
     # Asset names must end in _<os>_<arch>[vN] for the in-app updater (go-selfupdate).
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}{{ if .Arm }}v{{ .Arm }}{{ end }}"
     files: [README.md, LICENSE, NOTICE]
+    # Windows zips carry freetokens.exe and freetokensw.exe; other platforms have one binary.
+    allow_different_binary_count: true
 
 checksum:
   name_template: checksums.txt

@@ -8,7 +8,7 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"os"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -61,6 +61,7 @@ type app struct {
 	wakeCh    chan struct{}
 
 	header, status, warning, updated *systray.MenuItem
+	usageLabel                       *systray.MenuItem
 	quota                            []*systray.MenuItem
 	sessions                         []*systray.MenuItem
 	periods                          []periodItems
@@ -117,6 +118,7 @@ func (a *app) onReady() {
 		a.sessions = append(a.sessions, it)
 	}
 	systray.AddSeparator()
+	a.usageLabel = disabled("Token usage · cost at public API rates")
 	for _, label := range []string{"Today", "Yesterday", "Last 30 Days"} {
 		p := periodItems{head: systray.AddMenuItem(label, "Models used in this period")}
 		for i := 0; i < modelSlots; i++ {
@@ -139,8 +141,12 @@ func (a *app) onReady() {
 	a.installUpdate.Hide()
 
 	a.settings = systray.AddMenuItem("Settings", "")
-	a.showTimers = a.settings.AddSubMenuItemCheckbox("Show Session Timer in Menu Bar", "", a.cfg.ShowTimers)
-	a.login = a.settings.AddSubMenuItemCheckbox("Start at Login", "", autostart.Enabled())
+	// Only the macOS menu bar shows a title next to the icon; elsewhere the timer is in the tooltip.
+	// (The item is not created at all: Windows re-shows hidden items when their check state changes.)
+	if runtime.GOOS == "darwin" {
+		a.showTimers = a.settings.AddSubMenuItemCheckbox("Show Session Timer in Menu Bar", "", a.cfg.ShowTimers)
+	}
+	a.login = a.settings.AddSubMenuItemCheckbox(loginLabel(), "", autostart.Enabled())
 	a.settings.AddSeparator()
 	sub(a.settings, "Updates from GitHub Releases")
 	a.updOff = a.settings.AddSubMenuItemCheckbox("Never Check", "FreeTokens never contacts GitHub", false)
@@ -153,9 +159,9 @@ func (a *app) onReady() {
 		a.intervals[m] = a.settings.AddSubMenuItemCheckbox(fmt.Sprintf("%d min", m), "", false)
 	}
 	a.checkUpdate = systray.AddMenuItem("Check for Updates…", "Ask GitHub for the newest release")
-	a.about = systray.AddMenuItem("FreeTokens "+displayVersion(a.opt.Version), repoURL)
+	a.about = systray.AddMenuItem("About FreeTokens ("+displayVersion(a.opt.Version)+")", repoURL)
 	systray.AddSeparator()
-	a.quit = systray.AddMenuItem("Quit FreeTokens", "")
+	a.quit = systray.AddMenuItem(quitLabel(), "")
 	a.syncSettings()
 
 	go a.clicks()
@@ -165,11 +171,26 @@ func (a *app) onReady() {
 	a.requestRefresh(false)
 }
 
+// loginLabel and quitLabel follow each platform's wording.
+func loginLabel() string {
+	if runtime.GOOS == "windows" {
+		return "Start with Windows"
+	}
+	return "Start at Login"
+}
+
+func quitLabel() string {
+	if runtime.GOOS == "windows" {
+		return "Exit FreeTokens"
+	}
+	return "Quit FreeTokens"
+}
+
 func displayVersion(v string) string {
 	if update.IsRelease(v) {
 		return "v" + update.Normalize(v)
 	}
-	return "(development build)"
+	return "development build"
 }
 
 func setCheck(it *systray.MenuItem, on bool) {
@@ -184,7 +205,9 @@ func (a *app) syncSettings() {
 	a.mu.Lock()
 	c := a.cfg
 	a.mu.Unlock()
-	setCheck(a.showTimers, c.ShowTimers)
+	if a.showTimers != nil {
+		setCheck(a.showTimers, c.ShowTimers)
+	}
 	setCheck(a.login, autostart.Enabled())
 	setCheck(a.updOff, c.AutoUpdate == config.UpdateOff)
 	setCheck(a.updNotify, c.AutoUpdate == config.UpdateNotify)
@@ -221,6 +244,10 @@ func (a *app) clicks() {
 			}
 		}(m, it)
 	}
+	var timersCh chan struct{}
+	if a.showTimers != nil {
+		timersCh = a.showTimers.ClickedCh
+	}
 	for {
 		select {
 		case <-a.refresh.ClickedCh:
@@ -229,7 +256,7 @@ func (a *app) clicks() {
 			_ = browser.Open(freebuff.DashboardURL)
 		case <-a.about.ClickedCh:
 			_ = browser.Open(repoURL)
-		case <-a.showTimers.ClickedCh:
+		case <-timersCh:
 			a.setConfig(func(c *config.Config) { c.ShowTimers = !c.ShowTimers })
 			a.render()
 		case <-a.login.ClickedCh:
@@ -275,11 +302,9 @@ func (a *app) toggleLogin() {
 	if autostart.Enabled() {
 		err = autostart.Disable()
 	} else {
-		exe, e := os.Executable()
-		if e == nil {
-			err = autostart.Enable(autostart.Entry{Exec: []string{exe, "tray"}})
-		} else {
-			err = e
+		var entry autostart.Entry
+		if entry, err = autostart.TrayEntry(); err == nil {
+			err = autostart.Enable(entry)
 		}
 	}
 	if err != nil {
@@ -343,15 +368,39 @@ func (a *app) renderTimers() {
 		}
 	}
 	title := ""
-	tooltip := "FreeTokens"
+	tooltip := []string{"FreeTokens"}
 	if exp, ok := view.NextExpiry(q, now); ok {
 		if show {
 			title = view.Clock(exp.Sub(now))
 		}
-		tooltip += " · session " + view.Duration(exp.Sub(now)) + " left"
+		tooltip = append(tooltip, "Session: "+view.Duration(exp.Sub(now))+" left")
+	}
+	if snap != nil {
+		if lines := view.QuotaLines(snap.Quota, now); len(lines) > 0 {
+			tooltip = append(tooltip, lines[0])
+		}
+		if len(snap.Periods) > 0 && snap.Periods[0].HasData {
+			tooltip = append(tooltip, view.PeriodCompact(snap.Periods[0]))
+		}
+		footer := "Updated " + view.Ago(now.Sub(snap.RefreshedAt))
+		if partial(snap) {
+			footer += " · some history is incomplete"
+		}
+		a.updated.SetTitle(footer)
+		a.updated.Show()
 	}
 	systray.SetTitle(title)
-	systray.SetTooltip(tooltip)
+	// Windows truncates tray tooltips at 127 characters.
+	systray.SetTooltip(shorten(strings.Join(tooltip, "\n"), 127))
+}
+
+func partial(s *tracker.Snapshot) bool {
+	for _, p := range s.Periods {
+		if p.HasData && p.Partial {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *app) render() {
@@ -399,7 +448,7 @@ func (a *app) render() {
 			continue
 		}
 		per := snap.Periods[i]
-		p.head.SetTitle(view.Period(per))
+		p.head.SetTitle(view.PeriodCompact(per))
 		p.head.Show()
 		for j, it := range p.models {
 			if j < len(per.Models) {
@@ -410,7 +459,7 @@ func (a *app) render() {
 			}
 		}
 		if extra := len(per.Models) - len(p.models); extra > 0 {
-			p.more.SetTitle(fmt.Sprintf("…and %d more (see `freetokens status`)", extra))
+			p.more.SetTitle(fmt.Sprintf("…and %d more (run freetokens status)", extra))
 			p.more.Show()
 		} else if len(per.Models) == 0 {
 			p.more.SetTitle("No measured usage")
@@ -426,9 +475,8 @@ func (a *app) render() {
 	} else {
 		a.warning.Hide()
 	}
-	a.updated.SetTitle("Updated " + snap.RefreshedAt.Local().Format("15:04") + " · dollars are public-API estimates")
-	a.updated.SetTooltip(snap.SourceNote)
-	a.updated.Show()
+	a.usageLabel.SetTooltip(snap.SourceNote)
+	a.updated.SetTooltip("Last refreshed " + snap.RefreshedAt.Local().Format("Jan 2, 15:04") + ". " + snap.SourceNote)
 	a.renderTimers()
 }
 

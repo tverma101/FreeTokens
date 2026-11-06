@@ -3,7 +3,6 @@ package pricing
 import (
 	_ "embed"
 	"encoding/json"
-	"log"
 	"regexp"
 	"sort"
 	"strings"
@@ -64,8 +63,7 @@ func DecodeSupplement(data []byte) (*Supplement, error) {
 	for _, rule := range f.AliasRules {
 		re, err := regexp.Compile(rule.Pattern)
 		if err != nil {
-			log.Printf("pricing supplement: alias pattern %q skipped: %v", rule.Pattern, err)
-			continue
+			continue // RE2 has no lookaround; such rules cover non-Freebuff models (see README)
 		}
 		s.aliases = append(s.aliases, aliasRule{rule.Pattern, re, rule.Canonical})
 	}
