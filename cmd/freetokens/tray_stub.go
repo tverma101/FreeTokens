@@ -11,6 +11,6 @@ import (
 )
 
 func runTrayUI(*tracker.Tracker, *config.Store) {
-	fmt.Fprintln(os.Stderr, "This FreeTokens build has no tray support; use `freetokens status`.")
+	fmt.Fprintln(os.Stderr, "This FreeTokens build has no tray support; use \"freetokens status\".")
 	os.Exit(1)
 }

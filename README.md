@@ -37,6 +37,13 @@ extract `freetokens` (`freetokens.exe` on Windows) somewhere on your `PATH`.
 | FreeBSD | `amd64`, `arm64` |
 | OpenBSD / NetBSD | `amd64` |
 
+**Windows:** extract the zip to a folder such as `%LOCALAPPDATA%\Programs\FreeTokens`. It holds two
+copies of the same program: `freetokens.exe` for the command line, and `freetokensw.exe`, which
+starts the tray without a console window. Double-click `freetokensw.exe` to start the tray, then
+turn on **Settings → Start with Windows**. Windows may hide new tray icons under the **^** arrow;
+drag the icon onto the taskbar to keep it visible. SmartScreen may warn on first launch because
+releases aren't code-signed yet; choose **More info → Run anyway**.
+
 Every build except macOS is pure Go with no system libraries, so the CLI works on servers too.
 The Linux and BSD tray needs a desktop with StatusNotifierItem support: KDE, or GNOME with the
 AppIndicator extension, Xfce, Cinnamon, and others.
@@ -58,7 +65,7 @@ go install github.com/tverma101/FreeTokens/cmd/freetokens@latest
 ```bash
 freetokens            # tray / menu bar (prints status instead when there is no desktop session)
 freetokens status     # one-off report; --json for scripts
-freetokens autostart on
+freetokens autostart on   # on Windows this registers freetokensw.exe
 ```
 
 You need to have signed in once with the Freebuff CLI (`freebuff login`). FreeTokens reads the

@@ -41,7 +41,7 @@ func USD(v float64, lowerBound bool) string {
 		prefix = "≥"
 	}
 	if v > 0 && v < 0.01 {
-		return prefix + "<$0.01"
+		return "<$0.01"
 	}
 	return prefix + fmt.Sprintf("$%.2f", v)
 }
@@ -163,6 +163,15 @@ func NextExpiry(q *freebuff.Quota, now time.Time) (time.Time, bool) {
 
 // Period formats a period headline.
 func Period(p usage.Period) string {
+	s := PeriodCompact(p)
+	if p.HasData && p.Partial {
+		s += " (partial)"
+	}
+	return s
+}
+
+// PeriodCompact is Period without the partial marker, for menus that note incomplete history once.
+func PeriodCompact(p usage.Period) string {
 	if !p.HasData {
 		return p.Label + ": no usage"
 	}
@@ -170,10 +179,20 @@ func Period(p usage.Period) string {
 	if p.CostUSD != nil {
 		s += " · " + USD(*p.CostUSD, p.CostLowerBound)
 	}
-	if p.Partial {
-		s += " (partial)"
-	}
 	return s
+}
+
+// Ago is a locale-neutral relative time ("just now", "4 min ago", "2 hr ago").
+func Ago(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return fmt.Sprintf("%d min ago", int(d/time.Minute))
+	case d < 48*time.Hour:
+		return fmt.Sprintf("%d hr ago", int(d/time.Hour))
+	}
+	return fmt.Sprintf("%d days ago", int(d/(24*time.Hour)))
 }
 
 // Model formats one model row.

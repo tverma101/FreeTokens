@@ -21,13 +21,13 @@ type Auth struct {
 
 // Typed auth failures. Each has a repair message suitable for the tray and CLI.
 var (
-	ErrNotLoggedIn           = errors.New("no Freebuff login was found. Run `freebuff login`, then refresh FreeTokens")
+	ErrNotLoggedIn           = errors.New("Not signed in to Freebuff. Run \"freebuff login\" in a terminal, then refresh")
 	ErrInvalidConfigDir      = errors.New("FREEBUFF_CONFIG_DIR must be an absolute path")
 	ErrInvalidCredentials    = errors.New("Freebuff's credentials file is invalid. Sign in again with the Freebuff CLI")
 	ErrCredentialsUnreadable = errors.New("FreeTokens couldn't read Freebuff's local credentials. Check file or keychain access")
-	ErrPermissionRequired    = errors.New("the OS needs permission to read Freebuff's keychain item. Use Refresh Now and allow access when prompted")
-	ErrTokenInvalid          = errors.New("the Freebuff login has expired. Sign in again with the Freebuff CLI")
-	ErrMissingDefaultProfile = errors.New("Freebuff credentials were found, but they have no `default` profile. Sign in again with the Freebuff CLI, or point FREEBUFF_CONFIG_DIR at the directory that holds it")
+	ErrPermissionRequired    = errors.New("The OS needs permission to read Freebuff's keychain item. Use Refresh Now and allow access when prompted")
+	ErrTokenInvalid          = errors.New("Your Freebuff login has expired. Sign in again with the Freebuff CLI")
+	ErrMissingDefaultProfile = errors.New("Freebuff credentials were found, but they have no \"default\" profile. Sign in again with the Freebuff CLI, or point FREEBUFF_CONFIG_DIR at the directory that holds it")
 )
 
 // AuthStore reads the Freebuff CLI's existing `default` profile. Current CLI versions keep the token
