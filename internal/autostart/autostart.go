@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+
+	"github.com/tverma101/FreeTokens/internal/bundle"
 )
 
 // ID is the login item identifier.
@@ -21,8 +23,8 @@ type Entry struct {
 // tray without a console window, so login items and shortcuts should point at it.
 const WindowlessName = "freetokensw.exe"
 
-// TrayEntry is the login item for this installation: the running executable with "tray", or, on
-// Windows, the windowless sibling when it is present.
+// TrayEntry is the login item for this installation: the running executable with "tray"; on
+// Windows, the windowless sibling when it is present; inside FreeTokens.app, the app itself.
 func TrayEntry() (Entry, error) {
 	exe, err := os.Executable()
 	if err != nil {
@@ -30,6 +32,10 @@ func TrayEntry() (Entry, error) {
 	}
 	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
 		exe = resolved
+	}
+	if app := bundle.AppFor(exe); app != "" {
+		// LaunchServices keeps it to one instance and runs the SwiftUI menu bar app, not the engine.
+		return Entry{Exec: []string{"/usr/bin/open", "-a", app}}, nil
 	}
 	if runtime.GOOS == "windows" {
 		if w := filepath.Join(filepath.Dir(exe), WindowlessName); fileExists(w) {
