@@ -64,7 +64,18 @@ func (s AuthStore) CredentialsPath() (string, error) {
 	if env != "" && env != "prod" {
 		suffix = "-" + env
 	}
-	return filepath.Clean(filepath.Join(home, ".config", "manicode"+suffix, "credentials.json")), nil
+	return filepath.Clean(filepath.Join(configHome(home, s.Getenv), "manicode"+suffix, "credentials.json")), nil
+}
+
+// configHome is $XDG_CONFIG_HOME when it holds an absolute path, otherwise the user's ~/.config.
+// The Freebuff CLI and desktop app follow the XDG base directory spec, so on a Linux desktop that
+// exports XDG_CONFIG_HOME their files are not under ~/.config at all and a hardcoded path finds
+// neither the app's databases nor the CLI's credentials.
+func configHome(home string, getenv func(string) string) string {
+	if dir := strings.TrimSpace(getenv("XDG_CONFIG_HOME")); filepath.IsAbs(dir) {
+		return dir
+	}
+	return filepath.Join(home, ".config")
 }
 
 // Load returns the token, or (nil, nil) when nothing is configured anywhere. interactive allows a

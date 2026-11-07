@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 
+	"github.com/tverma101/FreeTokens/internal/appimage"
 	"github.com/tverma101/FreeTokens/internal/bundle"
 )
 
@@ -23,9 +24,15 @@ type Entry struct {
 // tray without a console window, so login items and shortcuts should point at it.
 const WindowlessName = "freetokensw.exe"
 
-// TrayEntry is the login item for this installation: the running executable with "tray"; on
-// Windows, the windowless sibling when it is present; inside FreeTokens.app, the app itself.
+// TrayEntry is the login item for this installation: the running executable with "gui" (which
+// falls back to the classic tray on builds without the popover); on Windows, the windowless
+// sibling when it is present; inside FreeTokens.app, the app itself.
 func TrayEntry() (Entry, error) {
+	// An AppImage mounts itself under /tmp and unmounts on exit, so a login item naming the
+	// executable inside the mount would break at the next login. Name the AppImage file instead.
+	if p := appimage.Path(); p != "" {
+		return Entry{Exec: []string{p, "gui"}}, nil
+	}
 	exe, err := os.Executable()
 	if err != nil {
 		return Entry{}, err
@@ -42,7 +49,7 @@ func TrayEntry() (Entry, error) {
 			exe = w
 		}
 	}
-	return Entry{Exec: []string{exe, "tray"}}, nil
+	return Entry{Exec: []string{exe, "gui"}}, nil
 }
 
 func fileExists(p string) bool {

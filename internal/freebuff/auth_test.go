@@ -76,3 +76,18 @@ func TestCredentialsPath(t *testing.T) {
 		t.Fatalf("path = %s", p)
 	}
 }
+
+// The CLI follows the XDG base directory spec, so a desktop that exports XDG_CONFIG_HOME keeps its
+// credentials (and the token in them) somewhere ~/.config never sees.
+func TestCredentialsPathHonoursXDGConfigHome(t *testing.T) {
+	xdg := t.TempDir()
+	p, err := store("", map[string]string{"XDG_CONFIG_HOME": xdg}, nil).CredentialsPath()
+	if err != nil || p != filepath.Join(xdg, "manicode", "credentials.json") {
+		t.Fatalf("path = %s err = %v", p, err)
+	}
+	// A relative value is not a base directory; the spec and Go's own resolution both ignore it.
+	p, _ = store("", map[string]string{"XDG_CONFIG_HOME": "relative"}, nil).CredentialsPath()
+	if p != filepath.Join("/home/u", ".config", "manicode", "credentials.json") {
+		t.Fatalf("relative XDG path = %s", p)
+	}
+}

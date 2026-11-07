@@ -1,0 +1,21 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "FreeTokens",
+  "outputfilename": "freetokens",
+  "frontend:dir": "web",
+  "frontend:install": "npm install",
+  "frontend:build": "npm run build",
+  "frontend:dev:watcher": "npm run dev",
+  "frontend:dev:serverUrl": "auto",
+  "build:tags": "gui",
+  "author": {
+    "name": "FreeTokens contributors"
+  },
+  "info": {
+    "companyName": "FreeTokens contributors",
+    "productName": "FreeTokens",
+    "productVersion": "0.0.0",
+    "copyright": "MIT License",
+    "comments": "Unofficial Freebuff usage tracker"
+  }
+}

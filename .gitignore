@@ -1,6 +1,15 @@
 /dist/
 /freetokens
 /freetokens.exe
+/freetokensw.exe*
+
+# Popover build output and generated Wails bindings
+cmd/freetokens/web/node_modules/
+cmd/freetokens/web/dist/
+cmd/freetokens/web/wailsjs/
+cmd/freetokens/web/package.json.md5
+cmd/freetokens/build/bin/
+cmd/freetokens/build/windows/
 *.test
 *.out
 .DS_Store

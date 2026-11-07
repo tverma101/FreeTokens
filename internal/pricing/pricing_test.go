@@ -51,6 +51,28 @@ func TestBundledSupplementAndAliasResolution(t *testing.T) {
 	}
 }
 
+func TestVendorReadsThePrefixOfThePricedRoute(t *testing.T) {
+	snap := NewSnapshot(BundledSupplement(), map[string]Rates{
+		"vendor/model-1-0": {Input: 3},
+		"bare-model":       {Input: 1},
+	})
+	cases := map[string]string{
+		"vendor/model-1-0": "vendor",
+		"vendor/model-1.0": "vendor", // normalized retry
+		"bare-model":       "",
+		"nobody/knows-me":  "",
+	}
+	for model, want := range cases {
+		if got := snap.Vendor(model); got != want {
+			t.Errorf("Vendor(%q) = %q, want %q", model, got, want)
+		}
+	}
+	var none *Snapshot
+	if got := none.Vendor("vendor/model-1-0"); got != "" {
+		t.Errorf("nil snapshot Vendor = %q, want empty", got)
+	}
+}
+
 func TestOpenRouterPagination(t *testing.T) {
 	p, err := ParseOpenRouterPage([]byte(`{"data":[{}],"total_count":3,"links":{"next":"/api/v1/models?offset=1&limit=1"}}`))
 	if err != nil || p.NextOffset == nil || *p.NextOffset != 1 || p.TotalCount != 3 {

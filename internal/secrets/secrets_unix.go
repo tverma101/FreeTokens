@@ -4,10 +4,16 @@ package secrets
 
 import (
 	"strings"
+	"time"
 
 	dbus "github.com/godbus/dbus/v5"
 	ss "github.com/zalando/go-keyring/secret_service"
 )
+
+// promptWait bounds how long an unlock prompt may stay unanswered. The tracker refreshes under a
+// three minute deadline, so a desktop that shows no prompt (a locked session, or a session with no
+// prompt agent at all) must not park the refresh forever.
+const promptWait = 2 * time.Minute
 
 type platformStore struct{}
 
@@ -65,13 +71,22 @@ func runPrompt(svc *ss.SecretService, prompt dbus.ObjectPath) error {
 	if err := svc.Object("org.freedesktop.secrets", prompt).Call("org.freedesktop.Secret.Prompt.Prompt", 0, "").Err; err != nil {
 		return err
 	}
-	for sig := range signals {
-		if sig.Path == prompt && len(sig.Body) > 0 {
-			if dismissed, _ := sig.Body[0].(bool); dismissed {
+	timer := time.NewTimer(promptWait)
+	defer timer.Stop()
+	for {
+		select {
+		case sig, ok := <-signals:
+			if !ok {
 				return ErrInteractionRequired
 			}
-			return nil
+			if sig.Path == prompt && len(sig.Body) > 0 {
+				if dismissed, _ := sig.Body[0].(bool); dismissed {
+					return ErrInteractionRequired
+				}
+				return nil
+			}
+		case <-timer.C:
+			return ErrInteractionRequired
 		}
 	}
-	return ErrInteractionRequired
 }

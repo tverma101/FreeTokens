@@ -13,6 +13,7 @@ import (
 
 	"github.com/creativeprojects/go-selfupdate"
 
+	"github.com/tverma101/FreeTokens/internal/appimage"
 	"github.com/tverma101/FreeTokens/internal/bundle"
 )
 
@@ -96,6 +97,11 @@ func Apply(ctx context.Context, info *Info) error {
 	}
 	if info.App != "" {
 		return applyApp(ctx, info, info.App)
+	}
+	// The AppImage mount is read-only and vanishes on exit, so replacing the running file can
+	// only fail. Say what to do instead of surfacing a read-only file system error.
+	if appimage.Path() != "" {
+		return errors.New("FreeTokens is running from an AppImage, which cannot replace itself. Download the new AppImage from the Releases page")
 	}
 	exe, err := selfupdate.ExecutablePath()
 	if err != nil {
