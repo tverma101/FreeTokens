@@ -176,3 +176,46 @@ func TestApplyApp(t *testing.T) {
 		})
 	}
 }
+
+func TestReplaceAppRollbackPreservesOldApp(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		rollbackFail bool
+	}{
+		{name: "install fails and rollback restores original"},
+		{name: "install and rollback both fail; backup survives", rollbackFail: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			app := filepath.Join(root, "FreeTokens.app")
+			fresh := filepath.Join(root, "new", "FreeTokens.app")
+			backup := filepath.Join(root, "work", "previous.app")
+			for _, dir := range []string{app, fresh, filepath.Dir(backup)} {
+				if err := os.MkdirAll(dir, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.WriteFile(filepath.Join(app, "original-marker"), []byte("original"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			renamed := 0
+			preserve, err := replaceApp(fresh, app, backup, func(from, to string) error {
+				renamed++
+				if renamed == 2 || (renamed == 3 && tc.rollbackFail) {
+					return fmt.Errorf("simulated rename failure on call %d", renamed)
+				}
+				return os.Rename(from, to)
+			})
+			if err == nil || preserve != tc.rollbackFail {
+				t.Fatalf("preserve=%v, error=%v; want preserve=%v and an error", preserve, err, tc.rollbackFail)
+			}
+			original := filepath.Join(app, "original-marker")
+			if tc.rollbackFail {
+				original = filepath.Join(backup, "original-marker")
+			}
+			if _, err := os.Stat(original); err != nil {
+				t.Fatalf("original app lost after failed install: %v", err)
+			}
+		})
+	}
+}
