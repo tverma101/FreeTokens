@@ -4,12 +4,21 @@ on:
   push:
     branches: [main]
   pull_request:
+    # Draft transitions launch a lightweight check; full packaging runs only once ready.
+    types: [opened, reopened, synchronize, ready_for_review, converted_to_draft]
+
+# New commits supersede stale PR test, package and smoke jobs.
+# Keep main-branch validation running and isolate this group from Release.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
 
 jobs:
   test:
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
@@ -28,7 +37,10 @@ jobs:
 
   # Builds the real release archives (every target) without publishing them.
   package:
+    # Drafts keep cross-platform unit tests, but defer costly archive and install checks.
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: macos-latest
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v5
         with:
@@ -41,6 +53,8 @@ jobs:
           distribution: goreleaser
           version: "~> v2"
           args: release --snapshot --clean
+      - name: Add the macOS app zip
+        run: cp dist-app/FreeTokens-*-macOS.zip dist/
       - uses: actions/upload-artifact@v4
         with:
           name: dist
@@ -54,6 +68,7 @@ jobs:
   # account, using a fake Desktop history to check local usage tracking.
   install-smoke:
     needs: package
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
@@ -90,3 +105,42 @@ jobs:
         run: |
           archive=$(cd dist && ls freetokens_*_${{ matrix.target }})
           scripts/smoke.sh "$PWD/dist" "$archive"
+
+  # Unpacks FreeTokens.app the way a user would, checks the signature and both architectures, runs
+  # the bundled engine, and launches the app to render its panel offscreen.
+  app-smoke:
+    needs: package
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - uses: actions/download-artifact@v5
+        with:
+          name: dist
+          path: dist
+      - name: Throwaway home with a fake Desktop history
+        run: |
+          home="$RUNNER_TEMP/home"
+          mkdir -p "$home"
+          go run scripts/mkfixture.go "$home"
+          echo "HOME=$home" >> "$GITHUB_ENV"
+      - name: Install and run
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          zip=$(cd dist && ls FreeTokens-*-macOS.zip)
+          scripts/smoke-app.sh "$PWD/dist" "$zip" "$RUNNER_TEMP/panel-${{ matrix.os }}.png"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: panel-${{ matrix.os }}
+          path: ${{ runner.temp }}/panel-*.png
+          if-no-files-found: ignore
+          retention-days: 7

@@ -9,6 +9,10 @@ The legacy model-slug digest (FNV-1a over UTF-16 code units) matches the publish
 algorithm in Freebuff/Codebuff (Apache License 2.0, Copyright CodebuffAI) so historical
 receipts resolve to the same catalog identities. No Freebuff source code is included.
 
+The macOS menu bar app (macos/) follows the SwiftUI panel design of the same QuotaBar fork, and
+macos/Sources/FreeTokens/Views/RingSectorShape.swift is ported from it (MIT, Copyright (c) 2026
+Robin Ebers).
+
 internal/pricing/pricing_supplement.json is a snapshot of the OpenUsage pricing
 supplement (MIT), refreshed at runtime from
 https://robinebers.github.io/openusage/pricing_supplement.json.
