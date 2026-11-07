@@ -42,7 +42,13 @@ func applyApp(ctx context.Context, info *Info, app string) error {
 		}
 		return err
 	}
-	defer os.RemoveAll(work)
+	// A failed installation followed by a failed rollback must not delete the only valid app.
+	preserveBackup := false
+	defer func() {
+		if !preserveBackup {
+			_ = os.RemoveAll(work)
+		}
+	}()
 
 	archive, err := fetch(ctx, rel.AssetURL, maxAppArchive)
 	if err != nil {
@@ -76,16 +82,24 @@ func applyApp(ctx context.Context, info *Info, app string) error {
 		return fmt.Errorf("the new FreeTokens.app has an invalid signature: %v: %s", err, out)
 	}
 	old := filepath.Join(work, "previous.app")
-	if err := os.Rename(app, old); err != nil {
-		return fmt.Errorf("moving the current app aside: %w", err)
+	preserveBackup, err = replaceApp(fresh, app, old, os.Rename)
+	return err
+}
+
+// replaceApp swaps the bundles and restores the old one if installing the replacement fails.
+// It returns preserveBackup when rollback also fails; callers must keep the backup directory
+// intact so a user can recover the original app rather than deleting it during cleanup.
+func replaceApp(fresh, app, old string, rename func(string, string) error) (preserveBackup bool, err error) {
+	if err := rename(app, old); err != nil {
+		return false, fmt.Errorf("moving the current app aside: %w", err)
 	}
-	if err := os.Rename(fresh, app); err != nil {
-		if rerr := os.Rename(old, app); rerr != nil {
-			return fmt.Errorf("installing the new app failed (%v) and the old app is at %s (%v)", err, old, rerr)
+	if err := rename(fresh, app); err != nil {
+		if rerr := rename(old, app); rerr != nil {
+			return true, fmt.Errorf("installing the new app failed (%v), rollback failed (%v); original app preserved at %s", err, rerr, old)
 		}
-		return fmt.Errorf("installing the new app: %w", err)
+		return false, fmt.Errorf("installing the new app: %w", err)
 	}
-	return nil
+	return false, nil
 }
 
 var downloadClient = &http.Client{Timeout: 10 * time.Minute}
