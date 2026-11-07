@@ -240,6 +240,41 @@ func runUpdate(args []string) error {
 	}
 	ctx, cancel := signalContext()
 	defer cancel()
+	// Plain-text scheduled checks must use the same policy gate as JSON callers.
+	// Otherwise --scheduled without --json silently bypasses off/notify and may install.
+	if *scheduled && !*asJSON {
+		res := updateJSON(ctx, *checkOnly, true)
+		if res.Error != "" {
+			return errors.New(res.Error)
+		}
+		switch res.Skipped {
+		case "off":
+			fmt.Println("Scheduled update check skipped (automatic updates are off or this is a development build).")
+			return nil
+		case "not-due":
+			fmt.Println("Scheduled update check skipped (the daily check is not due yet).")
+			return nil
+		}
+		if res.Latest == "" {
+			fmt.Println("No release for this platform was found.")
+			return nil
+		}
+		if res.Installed {
+			if res.App != "" {
+				fmt.Printf("Updated %s to v%s. Quit and reopen FreeTokens to use it.\n", res.App, res.Latest)
+			} else {
+				fmt.Printf("Updated to v%s. Restart the tray to use it.\n", res.Latest)
+			}
+			return nil
+		}
+		if res.Available {
+			fmt.Printf("FreeTokens v%s is available (you have v%s): %s\n", res.Latest, res.Current, res.URL)
+			fmt.Println("Automatic installation was not requested; no update installed.")
+			return nil
+		}
+		fmt.Printf("FreeTokens v%s is up to date.\n", res.Current)
+		return nil
+	}
 	if *asJSON {
 		log.SetOutput(io.Discard)
 		res := updateJSON(ctx, *checkOnly, *scheduled)
