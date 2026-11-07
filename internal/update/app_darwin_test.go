@@ -36,7 +36,7 @@ func TestAppAssetPattern(t *testing.T) {
 
 // fakeApp builds a minimal FreeTokens.app whose Resources/marker holds marker, ad-hoc signed
 // unless unsigned is set.
-func fakeApp(t *testing.T, dir, marker string, unsigned bool) string {
+func fakeApp(t *testing.T, dir, marker, bundleID, bundleVersion string, unsigned bool) string {
 	t.Helper()
 	app := filepath.Join(dir, "FreeTokens.app")
 	for _, d := range []string{"MacOS", "Helpers", "Resources"} {
@@ -44,13 +44,14 @@ func fakeApp(t *testing.T, dir, marker string, unsigned bool) string {
 			t.Fatal(err)
 		}
 	}
-	plist := `<?xml version="1.0" encoding="UTF-8"?>
+	plist := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>CFBundleExecutable</key><string>FreeTokens</string>
-<key>CFBundleIdentifier</key><string>io.github.tverma101.FreeTokens.test</string>
+<key>CFBundleIdentifier</key><string>%s</string>
+<key>CFBundleShortVersionString</key><string>%s</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-</dict></plist>`
+</dict></plist>`, bundleID, bundleVersion)
 	write := func(rel string, data []byte, mode os.FileMode) {
 		if err := os.WriteFile(filepath.Join(app, "Contents", rel), data, mode); err != nil {
 			t.Fatal(err)
@@ -101,14 +102,18 @@ func TestApplyApp(t *testing.T) {
 	}
 	const asset = "FreeTokens-9.9.9-macOS.zip"
 	cases := []struct {
-		name     string
-		unsigned bool
-		badSum   bool
-		wantErr  string
+		name       string
+		unsigned   bool
+		badSum     bool
+		bundleID   string
+		bundleVer  string
+		wantErr    string
 	}{
 		{name: "installs"},
 		{name: "checksum mismatch", badSum: true, wantErr: "failed verification"},
 		{name: "unsigned", unsigned: true, wantErr: "invalid signature"},
+		{name: "wrong bundle identity", bundleID: "org.example.NotFreeTokens", wantErr: "unexpected CFBundleIdentifier"},
+		{name: "wrong bundle version", bundleVer: "9.9.8", wantErr: "unexpected CFBundleShortVersionString"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -120,8 +125,12 @@ func TestApplyApp(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			app := fakeApp(t, install, "old", false)
-			archive := zipApp(t, fakeApp(t, build, "new", tc.unsigned), filepath.Join(root, asset))
+			const correctID = "io.github.tverma101.FreeTokens"
+			app := fakeApp(t, install, "old", correctID, "9.9.8", false)
+			bundleID, bundleVer := tc.bundleID, tc.bundleVer
+			if bundleID == "" { bundleID = correctID }
+			if bundleVer == "" { bundleVer = "9.9.9" }
+			archive := zipApp(t, fakeApp(t, build, "new", bundleID, bundleVer, tc.unsigned), filepath.Join(root, asset))
 			sum := sha256.Sum256(archive)
 			if tc.badSum {
 				sum[0] ^= 0xff
@@ -140,7 +149,7 @@ func TestApplyApp(t *testing.T) {
 			}))
 			defer srv.Close()
 
-			info := &Info{release: &selfupdate.Release{
+			info := &Info{Latest: "9.9.9", release: &selfupdate.Release{
 				AssetName:          asset,
 				AssetURL:           srv.URL + "/" + asset,
 				ValidationAssetURL: srv.URL + "/checksums.txt",
