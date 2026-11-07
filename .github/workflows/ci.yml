@@ -18,6 +18,7 @@ permissions:
 
 jobs:
   test:
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
@@ -39,6 +40,7 @@ jobs:
     # Drafts keep cross-platform unit tests, but defer costly archive and install checks.
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: macos-latest
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v5
         with:
@@ -66,6 +68,7 @@ jobs:
   # account, using a fake Desktop history to check local usage tracking.
   install-smoke:
     needs: package
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
@@ -107,6 +110,7 @@ jobs:
   # the bundled engine, and launches the app to render its panel offscreen.
   app-smoke:
     needs: package
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
