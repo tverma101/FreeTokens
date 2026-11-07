@@ -3,7 +3,6 @@ package config
 
 import (
 	"encoding/json"
-	"errors"
 	"os"
 	"path/filepath"
 	"sync"
@@ -98,6 +97,10 @@ func DefaultStore() (*Store, error) {
 func (s *Store) Load() Config {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.loadLocked()
+}
+
+func (s *Store) loadLocked() Config {
 	c := Defaults()
 	if data, err := os.ReadFile(s.Path); err == nil {
 		_ = json.Unmarshal(data, &c)
@@ -106,10 +109,16 @@ func (s *Store) Load() Config {
 	return c
 }
 
-// Save writes the config atomically.
+// Save replaces the config using a private staging file in the same directory.
+// Rename preserves the previous config when replacement fails; on non-Unix systems
+// the OS itself does not promise fully atomic renames.
 func (s *Store) Save(c Config) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.saveLocked(c)
+}
+
+func (s *Store) saveLocked(c Config) error {
 	c.Normalize()
 	data, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
@@ -118,22 +127,49 @@ func (s *Store) Save(c Config) error {
 	if err := os.MkdirAll(filepath.Dir(s.Path), 0o700); err != nil {
 		return err
 	}
-	tmp := s.Path + ".tmp"
-	if err := os.WriteFile(tmp, append(data, '\n'), 0o600); err != nil {
+	return replaceConfig(s.Path, append(data, '\n'), os.Rename)
+}
+
+// replaceConfig writes a unique private staging file, syncs it, then replaces the
+// destination. A failed rename never deletes the previous config. rename is injectable
+// so failure/rollback tests don't depend on platform-specific filesystem errors.
+func replaceConfig(path string, data []byte, rename func(string, string) error) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".freetokens-config-*")
+	if err != nil {
 		return err
 	}
-	if err := os.Rename(tmp, s.Path); err != nil {
-		if errors.Is(err, os.ErrExist) || os.Remove(s.Path) == nil {
-			return os.Rename(tmp, s.Path)
+	name := tmp.Name()
+	committed := false
+	defer func() {
+		if !committed {
+			_ = os.Remove(name)
 		}
+	}()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
 		return err
 	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := rename(name, path); err != nil {
+		return err
+	}
+	committed = true
 	return nil
 }
 
-// Update loads, mutates and saves.
+// Update serializes the read-modify-write transaction within this Store. Independent
+// processes or separate Store objects still require an OS-level coordination mechanism.
 func (s *Store) Update(f func(*Config)) (Config, error) {
-	c := s.Load()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c := s.loadLocked()
 	f(&c)
-	return c, s.Save(c)
+	c.Normalize()
+	return c, s.saveLocked(c)
 }
