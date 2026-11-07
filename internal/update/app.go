@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/creativeprojects/go-selfupdate"
@@ -70,12 +71,29 @@ func applyApp(ctx context.Context, info *Info, app string) error {
 		return fmt.Errorf("unpacking %s: %v: %s", rel.AssetName, err, out)
 	}
 	fresh := filepath.Join(unpacked, filepath.Base(app))
-	if _, err := os.Stat(fresh); err != nil {
+	if _, err := os.Lstat(fresh); errors.Is(err, os.ErrNotExist) {
 		fresh = filepath.Join(unpacked, "FreeTokens.app")
 	}
+	// The archive must contain a real app directory and real binaries, not symlinks to
+	// arbitrary files outside the extracted archive.
+	if st, err := os.Lstat(fresh); err != nil || !st.IsDir() {
+		return fmt.Errorf("%s has no valid FreeTokens.app directory", rel.AssetName)
+	}
 	for _, p := range []string{"Contents/Info.plist", "Contents/MacOS/FreeTokens", "Contents/Helpers/freetokens"} {
-		if st, err := os.Stat(filepath.Join(fresh, p)); err != nil || !st.Mode().IsRegular() {
-			return fmt.Errorf("%s is missing %s", rel.AssetName, p)
+		if st, err := os.Lstat(filepath.Join(fresh, p)); err != nil || !st.Mode().IsRegular() {
+			return fmt.Errorf("%s is missing a regular %s", rel.AssetName, p)
+		}
+	}
+	// An ad-hoc signature seals the downloaded bundle, but is not a trusted publisher
+	// identity. Check the bundle ID and version separately to reject mislabeled assets.
+	plist := filepath.Join(fresh, "Contents", "Info.plist")
+	for _, check := range []struct{ key, want string }{
+		{"CFBundleIdentifier", "io.github.tverma101.FreeTokens"},
+		{"CFBundleShortVersionString", Normalize(info.Latest)},
+	} {
+		value, err := plistValue(ctx, plist, check.key)
+		if err != nil || value != check.want {
+			return fmt.Errorf("%s has unexpected %s %q (expected %q)", rel.AssetName, check.key, value, check.want)
 		}
 	}
 	if out, err := exec.CommandContext(ctx, "/usr/bin/codesign", "--verify", "--deep", "--strict", fresh).CombinedOutput(); err != nil {
@@ -84,6 +102,16 @@ func applyApp(ctx context.Context, info *Info, app string) error {
 	old := filepath.Join(work, "previous.app")
 	preserveBackup, err = replaceApp(fresh, app, old, os.Rename)
 	return err
+}
+
+// plistValue reads one scalar from a macOS app's Info.plist without trusting an archive's
+// self-reported signature as a publisher identity.
+func plistValue(ctx context.Context, path, key string) (string, error) {
+	out, err := exec.CommandContext(ctx, "/usr/libexec/PlistBuddy", "-c", "Print :"+key, path).Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 // replaceApp swaps the bundles and restores the old one if installing the replacement fails.
