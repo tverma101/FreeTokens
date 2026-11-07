@@ -4,6 +4,14 @@ on:
   push:
     branches: [main]
   pull_request:
+    # Draft transitions launch a lightweight check; full packaging runs only once ready.
+    types: [opened, reopened, synchronize, ready_for_review, converted_to_draft]
+
+# New commits supersede stale PR test, package and smoke jobs.
+# Keep main-branch validation running and isolate this group from Release.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -28,6 +36,8 @@ jobs:
 
   # Builds the real release archives (every target) without publishing them.
   package:
+    # Drafts keep cross-platform unit tests, but defer costly archive and install checks.
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v5
