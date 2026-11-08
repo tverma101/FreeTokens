@@ -169,3 +169,25 @@ func TestReadRolloutLateContextAndUnattributedResponse(t *testing.T) {
 		t.Fatalf("late context misattributed: turns=%+v", turns)
 	}
 }
+
+
+// An explicit turn context is authoritative at the moment of the receipt, not forever.
+// A later model change for the same turn ID must not overwrite an earlier model.
+func TestReadRolloutPreservesExplicitModelBeforeSwitch(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "rollout-same-turn-model-switch.jsonl")
+	at := time.Date(2026, 11, 8, 12, 0, 0, 0, time.Local)
+	writeRollout(t, path,
+		turnContext(at, "t1", "gpt-5-codex"),
+		record(at.Add(time.Second), "resp_first", "t1", 50, 0, 0, 0),
+		turnContext(at.Add(2*time.Second), "t1", "gpt-6-luna"),
+		record(at.Add(3*time.Second), "resp_second", "t1", 70, 0, 0, 0),
+	)
+	turns, err := readRollout(context.Background(), path)
+	if err != nil || len(turns) != 2 {
+		t.Fatalf("rollout turns=%+v err=%v", turns, err)
+	}
+	if turns[0].Model != "gpt-5-codex" || turns[1].Model != "gpt-6-luna" {
+		t.Fatalf("model switch misattributed: turns=%+v", turns)
+	}
+}
