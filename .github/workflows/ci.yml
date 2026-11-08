@@ -161,7 +161,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           archive=$(cd dist && ls freetokens_*_${{ matrix.target }})
-          scripts/smoke.sh "$PWD/dist" "$archive"
+          bash scripts/smoke.sh "$PWD/dist" "$archive"
 
   # Unpacks FreeTokens.app the way a user would, checks the signature and both architectures, runs
   # the bundled engine, and launches the app to render its panel offscreen.
