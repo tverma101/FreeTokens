@@ -22,10 +22,62 @@ type Variant struct {
 // ModelRow groups variants of one model.
 type ModelRow struct {
 	Name         string    `json:"name"`
+	Provider     string    `json:"provider"`
+	Source       string    `json:"source"`
 	Tokens       int64     `json:"tokens"`
 	CostUSD      *float64  `json:"costUsd,omitempty"`
 	CostComplete bool      `json:"costComplete"`
 	Variants     []Variant `json:"variants,omitempty"`
+}
+
+// SourceFreebuff is the origin of Freebuff hosted and Desktop runs, whose model rows carry no
+// origin prefix.
+const SourceFreebuff = "Freebuff"
+
+// SourceRow is the measured tokens one origin contributed to a period.
+type SourceRow struct {
+	Name   string `json:"name"`
+	Tokens int64  `json:"tokens"`
+}
+
+// originSources maps the source label a history reader writes into its model rows to the name the
+// popover shows. The IDE label is checked before the Antigravity app label, which is its prefix.
+var originSources = []struct{ prefix, label string }{
+	{"Antigravity IDE", "Antigravity IDE"},
+	{"Agy CLI", "Agy CLI"},
+	{"Antigravity", "Antigravity app"},
+	{"Claude", "Claude"},
+	{"Codex", "Codex"},
+	{"OpenCode", "OpenCode"},
+}
+
+// sourceOrder is the display order of the per-source summary.
+var sourceOrder = []string{SourceFreebuff, "Antigravity app", "Antigravity IDE", "Agy CLI", "Claude", "Codex", "OpenCode"}
+
+// SourceOf names where a model row's tokens were measured.
+func SourceOf(model string) string {
+	for _, s := range originSources {
+		if strings.HasPrefix(model, s.prefix+" · ") {
+			return s.label
+		}
+	}
+	return SourceFreebuff
+}
+
+// summarizeSources groups model rows by origin, in display order, skipping origins with no usage.
+func summarizeSources(models []ModelRow) []SourceRow {
+	totals := map[string]int64{}
+	for _, m := range models {
+		name := SourceOf(m.Name)
+		totals[name] = satAdd(totals[name], m.Tokens)
+	}
+	var out []SourceRow
+	for _, name := range sourceOrder {
+		if totals[name] > 0 {
+			out = append(out, SourceRow{Name: name, Tokens: totals[name]})
+		}
+	}
+	return out
 }
 
 // Day is one local calendar day.
@@ -53,6 +105,8 @@ type modelAcc struct {
 	cost     float64
 	priced   bool
 	complete bool
+	provider string
+	fallback string
 	variants map[string]*variantAcc
 }
 
@@ -68,7 +122,12 @@ type dayAcc struct {
 }
 
 // Accumulator collects per-day tokens and public-rate cost estimates.
-type Accumulator struct{ days map[string]*dayAcc }
+type Accumulator struct {
+	days map[string]*dayAcc
+	// Vendor supplies the pricing catalog's vendor prefix for a model name. It is only consulted
+	// when no provider keyword matches, and may be nil.
+	Vendor func(string) string
+}
 
 func (a *Accumulator) day(d string) *dayAcc {
 	if a.days == nil {
@@ -91,6 +150,23 @@ func satAdd(a, b int64) int64 {
 
 // Add records measured tokens; a nil cost marks the day and model incomplete.
 func (a *Accumulator) Add(day string, tokens int64, cost *float64, model, group string) {
+	a.add(day, tokens, cost, model, group, "", "")
+}
+
+// AddServed records measured tokens whose serving vendor the source recorded. A non-empty provider
+// wins over the keyword table, because a measured vendor beats a guess from the model name.
+func (a *Accumulator) AddServed(day string, tokens int64, cost *float64, model, group, provider string) {
+	a.add(day, tokens, cost, model, group, provider, "")
+}
+
+// AddOwned records measured tokens for a model the source serves itself, such as an OpenCode Zen
+// model. The provider is used only when neither the keyword table nor the pricing catalog names a
+// vendor, so it never relabels another vendor's model.
+func (a *Accumulator) AddOwned(day string, tokens int64, cost *float64, model, group, provider string) {
+	a.add(day, tokens, cost, model, group, "", provider)
+}
+
+func (a *Accumulator) add(day string, tokens int64, cost *float64, model, group, provider, fallback string) {
 	d := a.day(day)
 	d.tokens = satAdd(d.tokens, tokens)
 	if cost != nil {
@@ -107,6 +183,12 @@ func (a *Accumulator) Add(day string, tokens int64, cost *float64, model, group 
 	if m == nil {
 		m = &modelAcc{complete: true, variants: map[string]*variantAcc{}}
 		d.models[id] = m
+	}
+	if provider != "" {
+		m.provider = provider
+	}
+	if fallback != "" {
+		m.fallback = fallback
 	}
 	m.tokens = satAdd(m.tokens, tokens)
 	if cost != nil {
@@ -165,7 +247,7 @@ func (a *Accumulator) Build() []Day {
 		day := Day{Date: date, Tokens: d.tokens, CostUSD: costPtr(d.priced, d.cost), CostComplete: d.complete,
 			Partial: d.partial, UnknownModels: setList(d.unknown), UnpricedModels: setList(d.unpriced), Models: []ModelRow{}}
 		for name, m := range d.models {
-			row := ModelRow{Name: name, Tokens: m.tokens, CostUSD: costPtr(m.priced, m.cost), CostComplete: m.complete}
+			row := ModelRow{Name: name, Provider: providerFor(m.provider, m.fallback, name, a.Vendor), Source: SourceOf(name), Tokens: m.tokens, CostUSD: costPtr(m.priced, m.cost), CostComplete: m.complete}
 			if len(m.variants) > 1 || (len(m.variants) == 1 && firstVariant(m).name != name) {
 				for _, v := range m.variants {
 					row.Variants = append(row.Variants, Variant{v.name, v.tokens, costPtr(v.priced, v.cost), v.complete})
@@ -210,6 +292,26 @@ func sortModels(rows []ModelRow) {
 // DayKey is the local calendar day of t.
 func DayKey(t time.Time) string { return t.Local().Format("2006-01-02") }
 
+// HistoryWindow is how far back each local reader keeps individual turns. The panel shows at most the
+// last 30 days, so anything older is not retained: on an agent-heavy machine the alternative is
+// keeping every turn ever written in memory and re-aggregating it on each refresh.
+const HistoryWindow = 31 * 24 * time.Hour
+
+// HistoryCutoff is the oldest instant a scan started at now needs to keep.
+func HistoryCutoff(now time.Time) time.Time { return now.Add(-HistoryWindow) }
+
+// KeepSince drops the items older than cutoff, in place, and returns the retained prefix. Items
+// without a timestamp are dropped too: no reader can place them in the displayed window.
+func KeepSince[T any](items []T, cutoff time.Time, at func(T) time.Time) []T {
+	kept := items[:0]
+	for _, item := range items {
+		if t := at(item); !t.Before(cutoff) {
+			kept = append(kept, item)
+		}
+	}
+	return kept
+}
+
 // Period summarizes one or more days.
 type Period struct {
 	Label   string   `json:"label"`
@@ -220,7 +322,9 @@ type Period struct {
 	Partial        bool       `json:"partial"`
 	UnknownModels  []string   `json:"unknownModels,omitempty"`
 	Models         []ModelRow `json:"models"`
-	HasData        bool       `json:"hasData"`
+	// Sources splits the period's tokens by where they were measured.
+	Sources []SourceRow `json:"sources,omitempty"`
+	HasData bool        `json:"hasData"`
 }
 
 // Summarize merges the given days into one period.
@@ -250,7 +354,11 @@ func Summarize(label string, days []Day, include func(string) bool) Period {
 		for _, m := range d.Models {
 			row := models[m.Name]
 			if row == nil {
-				row = &ModelRow{Name: m.Name, CostComplete: true}
+				provider := m.Provider
+				if provider == "" {
+					provider = ProviderOf(m.Name)
+				}
+				row = &ModelRow{Name: m.Name, Provider: provider, Source: SourceOf(m.Name), CostComplete: true}
 				models[m.Name] = row
 			}
 			row.Tokens = satAdd(row.Tokens, m.Tokens)
@@ -273,6 +381,7 @@ func Summarize(label string, days []Day, include func(string) bool) Period {
 		p.Models = append(p.Models, *r)
 	}
 	sortModels(p.Models)
+	p.Sources = summarizeSources(p.Models)
 	return p
 }
 
@@ -301,14 +410,17 @@ func mergeVariants(into, add []Variant) []Variant {
 	return into
 }
 
-// StandardPeriods returns Today, Yesterday and Last 30 Days (today plus the 29 previous days).
+// StandardPeriods returns Today, Yesterday, Week (today plus the 6 previous days) and
+// Last 30 Days (today plus the 29 previous days).
 func StandardPeriods(days []Day, now time.Time) []Period {
 	today := DayKey(now)
 	yesterday := DayKey(now.AddDate(0, 0, -1))
+	week := DayKey(now.AddDate(0, 0, -6))
 	first := DayKey(now.AddDate(0, 0, -29))
 	return []Period{
 		Summarize("Today", days, func(d string) bool { return d == today }),
 		Summarize("Yesterday", days, func(d string) bool { return d == yesterday }),
+		Summarize("Week", days, func(d string) bool { return d >= week && d <= today }),
 		Summarize("Last 30 Days", days, func(d string) bool { return d >= first && d <= today }),
 	}
 }

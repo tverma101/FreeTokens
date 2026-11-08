@@ -56,7 +56,7 @@ echo "30-day tokens=$tokens today=$today today-cost=$cost"
 if "$bin" config set auto-update bogus 2>/dev/null; then echo "invalid value accepted"; exit 1; fi
 
 "$bin" autostart on | tee autostart.txt
-if [[ "$archive" == *.zip ]]; then grep -q 'freetokensw.exe" tray\|freetokensw.exe tray' autostart.txt; fi
+if [[ "$archive" == *.zip ]]; then grep -q 'freetokensw.exe" gui\|freetokensw.exe gui' autostart.txt; fi
 [ "$("$bin" autostart)" = on ]
 "$bin" autostart off
 [ "$("$bin" autostart)" = off ]

@@ -55,21 +55,57 @@ func NormalizedKey(v string) string {
 }
 
 func (p *Snapshot) lookup(name string) (Rates, bool) {
-	if r, ok := p.Supplement.Pricing[name]; ok {
+	key, ok := p.key(name)
+	if !ok {
+		return Rates{}, false
+	}
+	if r, ok := p.Supplement.Pricing[key]; ok {
 		return r, true
 	}
-	if r, ok := p.OpenRouter[name]; ok {
-		return r, true
+	return p.OpenRouter[key], true
+}
+
+// key names the catalog entry that prices name, preferring the supplement the way lookup does.
+func (p *Snapshot) key(name string) (string, bool) {
+	if _, ok := p.Supplement.Pricing[name]; ok {
+		return name, true
+	}
+	if _, ok := p.OpenRouter[name]; ok {
+		return name, true
 	}
 	if n := NormalizedKey(name); n != name {
-		if r, ok := p.Supplement.Pricing[n]; ok {
-			return r, true
+		if _, ok := p.Supplement.Pricing[n]; ok {
+			return n, true
 		}
-		if r, ok := p.OpenRouter[n]; ok {
-			return r, true
+		if _, ok := p.OpenRouter[n]; ok {
+			return n, true
 		}
 	}
-	return Rates{}, false
+	return "", false
+}
+
+// Vendor returns the vendor prefix of the catalog entry that prices model, for example "x-ai" for
+// "x-ai/grok-4". Bare keys and models no catalog prices return "".
+func (p *Snapshot) Vendor(model string) string {
+	if p == nil || model == "" {
+		return ""
+	}
+	if canonical, ok := p.Supplement.CanonicalName(model); ok && canonical != model {
+		if key, ok := p.key(canonical); ok {
+			return vendorPrefix(key)
+		}
+	}
+	if key, ok := p.key(model); ok {
+		return vendorPrefix(key)
+	}
+	return ""
+}
+
+func vendorPrefix(key string) string {
+	if i := strings.IndexByte(key, '/'); i > 0 && i < len(key)-1 {
+		return key[:i]
+	}
+	return ""
 }
 
 // Resolve follows QuotaBar's order for exact routes: a supplement alias's canonical key first,

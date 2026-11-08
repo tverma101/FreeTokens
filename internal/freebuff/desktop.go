@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"log"
 	"math"
 	"net/url"
@@ -64,30 +63,216 @@ const assistantMessagesSQL = `SELECT
 FROM messages m JOIN threads t ON t.id = m.thread_id
 WHERE t.harness_id = 'codebuff' AND m.role = 'assistant'`
 
-// DesktopProjectsDir is where Freebuff Desktop keeps per-project databases.
-func DesktopProjectsDir() string {
+// DesktopRoots lists the per-user directories Freebuff may keep its data in, most likely first.
+// The app keeps its data beside its CLI credentials in the XDG config directory on every platform:
+// $XDG_CONFIG_HOME when set, otherwise ~/.config. Linux builds call the directory "Freebuff" and
+// earlier ones called it "freebuff-desktop". Older FreeTokens releases looked only in
+// ~/.config/freebuff-desktop, so a Linux install using XDG_CONFIG_HOME was never read at all.
+//
+// Some installs keep history in the workspace instead (<project>/.freebuff/desktop-v2.db), which is
+// outside every directory above. The app records no readable list of workspaces and walking a home
+// directory would be unbounded, so those are opt-in through FREETOKENS_HISTORY_DIRS: a path-list of
+// project roots or .freebuff directories. Anything not listed there is not searched, and
+// `freetokens diagnose` prints the roots actually used.
+func DesktopRoots() []string {
+	names := []string{"Freebuff", "freebuff", "freebuff-desktop"}
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".config", "freebuff-desktop", "projects")
+	var roots []string
+	// add covers a base directory both by the names a release has used and by anything already on
+	// disk whose name starts with "freebuff", so a spelling difference doesn't hide the data.
+	add := func(base string) {
+		if base == "" {
+			return
+		}
+		for _, name := range names {
+			roots = append(roots, filepath.Join(base, name))
+		}
+		roots = append(roots, freebuffDirsIn(base)...)
+	}
+	// $XDG_CONFIG_HOME first, then ~/.config: the app follows the XDG spec, and a directory it no
+	// longer uses is worth one cheap look. configHome is relative (and skipped) without a home.
+	if dir := configHome(home, os.Getenv); filepath.IsAbs(dir) {
+		add(dir)
+	}
+	if home != "" {
+		add(filepath.Join(home, ".config"))
+	}
+	switch runtime.GOOS {
+	case "windows":
+		add(os.Getenv("APPDATA"))
+		add(os.Getenv("LOCALAPPDATA"))
+	case "darwin":
+		add(filepath.Join(home, "Library", "Application Support"))
+	}
+	if config, err := os.UserConfigDir(); err == nil {
+		add(config)
+	}
+	if data := os.Getenv("XDG_DATA_HOME"); data != "" && filepath.IsAbs(data) {
+		add(data)
+	} else {
+		add(filepath.Join(home, ".local", "share"))
+	}
+	roots = append(roots, workspaceRoots()...)
+	return uniquePaths(roots)
 }
 
-// DesktopDatabases lists existing project databases.
-func DesktopDatabases(root string) ([]string, error) {
-	entries, err := os.ReadDir(root)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
+// HistoryDirsEnv names the opt-in list of extra directories searched for Freebuff history.
+const HistoryDirsEnv = "FREETOKENS_HISTORY_DIRS"
+
+// workspaceRoots returns the extra roots the user pointed at, in order. Each entry is either a
+// project root (its .freebuff directory is searched) or a .freebuff directory itself. Relative
+// entries are skipped: the working directory of a login item is not the user's project.
+func workspaceRoots() []string {
+	var out []string
+	for _, entry := range filepath.SplitList(os.Getenv(HistoryDirsEnv)) {
+		entry = strings.TrimSpace(entry)
+		if entry == "" || !filepath.IsAbs(entry) {
+			continue
+		}
+		if strings.EqualFold(filepath.Base(filepath.Clean(entry)), ".freebuff") {
+			out = append(out, filepath.Clean(entry))
+			continue
+		}
+		out = append(out, filepath.Join(filepath.Clean(entry), ".freebuff"))
 	}
+	return out
+}
+
+// freebuffDirsIn lists the directories in base that belong to this app, whatever spelling and
+// suffix its release used ("Freebuff", "freebuff-desktop", "Freebuff Desktop").
+func freebuffDirsIn(base string) []string {
+	entries, err := os.ReadDir(base)
 	if err != nil {
-		return nil, err
+		return nil
 	}
 	var out []string
 	for _, e := range entries {
-		p := filepath.Join(root, e.Name(), "desktop-v2.db")
-		if st, err := os.Stat(p); err == nil && !st.IsDir() {
-			out = append(out, p)
+		if e.IsDir() && strings.HasPrefix(strings.ToLower(e.Name()), "freebuff") {
+			out = append(out, filepath.Join(base, e.Name()))
+		}
+	}
+	return out
+}
+
+// Electron keeps caches and profile stores beside the app's own files; none of them holds a SQLite
+// usage database, and walking them is the expensive part of a search.
+var electronDirs = map[string]bool{
+	"Cache": true, "Code Cache": true, "DawnCache": true, "DawnGraphiteCache": true,
+	"DawnWebGPUCache": true, "GPUCache": true, "Crashpad": true, "Partitions": true,
+	"Local Storage": true, "Session Storage": true, "blob_storage": true, "shared_proto_db": true,
+	"IndexedDB": true, "Service Worker": true, "CacheStorage": true, "File System": true,
+	"Network": true,
+}
+
+// maxScanDepth covers both layouts the app has used: <root>/<project>/db and <root>/data/<x>/db.
+// The walk is bounded by depth and by the Electron directory skip list instead of by a result cap:
+// a cap would silently drop the projects over it and publish totals that look complete.
+const maxScanDepth = 3
+
+// DesktopDatabases lists Freebuff's per-project databases under the given roots. Electron's state
+// files live in the same tree and share extensions, so a candidate counts only when it carries the
+// messages and threads tables the usage projection reads.
+func DesktopDatabases(roots []string) ([]string, error) {
+	var paths []string
+	for _, root := range roots {
+		paths = append(paths, discoverDatabases(root)...)
+	}
+	var out []string
+	for _, path := range uniquePaths(paths) {
+		if hasUsageSchema(path) {
+			out = append(out, path)
 		}
 	}
 	sort.Strings(out)
 	return out, nil
+}
+
+// discoverDatabases walks one root a few levels deep for SQLite files.
+func discoverDatabases(root string) []string {
+	var out []string
+	var walk func(dir string, depth int)
+	walk = func(dir string, depth int) {
+		if depth > maxScanDepth {
+			return
+		}
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			return
+		}
+		for _, e := range entries {
+			path := filepath.Join(dir, e.Name())
+			if e.IsDir() {
+				if !electronDirs[e.Name()] {
+					walk(path, depth+1)
+				}
+				continue
+			}
+			if !isDatabaseName(e.Name()) {
+				continue
+			}
+			if st, err := e.Info(); err == nil && st.Mode().IsRegular() {
+				out = append(out, path)
+			}
+		}
+	}
+	walk(root, 0)
+	return out
+}
+
+func isDatabaseName(name string) bool {
+	switch strings.ToLower(filepath.Ext(name)) {
+	case ".db", ".sqlite", ".sqlite3":
+		return true
+	}
+	return false
+}
+
+// hasUsageSchema reports whether path holds the two tables the usage projection reads, so a
+// Chromium state file is skipped instead of failing the whole history read.
+func hasUsageSchema(path string) bool {
+	valid, err := inspectUsageSchema(path)
+	// A corrupt/locked known Freebuff database must reach the scanner's coverage warning,
+	// not vanish as though it were an unrelated Chromium state file.
+	return valid || (err != nil && strings.EqualFold(filepath.Base(path), "desktop-v2.db"))
+}
+
+func inspectUsageSchema(path string) (bool, error) {
+	var lastErr error
+	for _, mode := range []string{"ro", "rw"} {
+		db, err := sql.Open("sqlite", sqliteURI(path, mode))
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		var tables int
+		err = db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name IN ('messages', 'threads')`).Scan(&tables)
+		_ = db.Close()
+		if err == nil {
+			return tables == 2, nil
+		}
+		lastErr = err
+	}
+	return false, lastErr
+}
+
+// uniquePaths drops repeats (Windows' APPDATA and the user config dir are the same directory) and
+// keeps the order in which they were found.
+func uniquePaths(paths []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, p := range paths {
+		p = filepath.Clean(p)
+		key := p
+		if runtime.GOOS == "windows" {
+			key = strings.ToLower(p)
+		}
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, p)
+	}
+	return out
 }
 
 type rawRow struct{ id, timestamp, metrics, selectedModel string }
@@ -265,17 +450,37 @@ type cachedDB struct {
 // DesktopScanner reads Freebuff Desktop's measured usage (never conversation text) and folds it
 // with hosted receipts. Unchanged database+WAL revisions reuse the previously derived turns.
 type DesktopScanner struct {
-	Root     string
+	// Roots are the directories searched for the app's databases (see DesktopRoots).
+	Roots    []string
 	MaxTurns int
 	mu       sync.Mutex
 	dbs      map[string]*cachedDB
 	order    []string
 	retained int
+	// unreadable counts malformed rows; unreadableDBs counts known Freebuff stores that failed
+	// to open. Both are surfaced separately rather than silently undercounting usage.
+	unreadable int
+	unreadableDBs int
+}
+
+// Unreadable reports how many local history rows the last scan skipped for having no identifier
+// or timestamp, so a caller can say that its totals are a lower bound.
+func (s *DesktopScanner) Unreadable() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.unreadable
+}
+
+// UnreadableDatabases reports known Freebuff history stores skipped due to read errors.
+func (s *DesktopScanner) UnreadableDatabases() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.unreadableDBs
 }
 
 // HasHistory reports whether any project database exists.
 func (s *DesktopScanner) HasHistory() bool {
-	paths, _ := DesktopDatabases(s.Root)
+	paths, _ := DesktopDatabases(s.Roots)
 	return len(paths) > 0
 }
 
@@ -322,7 +527,7 @@ func (s *DesktopScanner) Scan(ctx context.Context, now time.Time, p *pricing.Sna
 	if maxTurns <= 0 {
 		maxTurns = 200_000
 	}
-	paths, err := DesktopDatabases(s.Root)
+	paths, err := DesktopDatabases(s.Roots)
 	if err != nil {
 		return nil, ErrLocalHistory
 	}
@@ -338,6 +543,7 @@ func (s *DesktopScanner) Scan(ctx context.Context, now time.Time, p *pricing.Sna
 		}
 	}
 	if len(paths) == 0 && len(hosted) == 0 {
+		s.unreadable, s.unreadableDBs = 0, 0
 		return &Fold{Days: []usage.Day{}}, nil
 	}
 	groups := [][]*turn{}
@@ -347,6 +553,7 @@ func (s *DesktopScanner) Scan(ctx context.Context, now time.Time, p *pricing.Sna
 	}
 	groups = append(groups, h)
 	unreadable := 0
+	unreadableDBs := 0
 	for _, path := range paths {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -359,8 +566,17 @@ func (s *DesktopScanner) Scan(ctx context.Context, now time.Time, p *pricing.Sna
 		}
 		rows, err := readDesktopRows(ctx, path)
 		if err != nil {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
 			log.Printf("freebuff desktop history %s: %v", filepath.Base(filepath.Dir(path)), err)
-			return nil, ErrLocalHistory
+			unreadableDBs++
+			if old := s.dbs[path]; old != nil {
+				s.retained -= len(old.turns)
+				delete(s.dbs, path)
+				s.removeOrder(path)
+			}
+			continue
 		}
 		var turns []*turn
 		bad := 0
@@ -382,6 +598,7 @@ func (s *DesktopScanner) Scan(ctx context.Context, now time.Time, p *pricing.Sna
 			s.store(path, &cachedDB{before, turns, bad}, maxTurns)
 		}
 	}
+	s.unreadable, s.unreadableDBs = unreadable, unreadableDBs
 	if unreadable > 0 {
 		log.Printf("freebuff: %d local history row(s) had no identifier or timestamp and were skipped", unreadable)
 	}
@@ -438,7 +655,7 @@ func optional(c count) (int64, error) {
 
 func fold(groups [][]*turn, now time.Time, p *pricing.Snapshot, catalog map[string]CatalogEntry) (*Fold, error) {
 	identity := NewIdentity(catalog, p)
-	var acc usage.Accumulator
+	acc := usage.Accumulator{Vendor: p.Vendor}
 	seen := map[string]bool{}
 	for _, g := range groups {
 		for _, t := range g {
