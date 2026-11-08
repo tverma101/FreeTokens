@@ -10,9 +10,9 @@ require (
 	github.com/thlib/go-timezone-local v0.0.9
 	github.com/wailsapp/wails/v2 v2.17.1
 	github.com/zalando/go-keyring v0.2.8
+	go.yaml.in/yaml/v3 v3.0.5
 	golang.org/x/sys v0.49.0
 	modernc.org/sqlite v1.61.1
-	go.yaml.in/yaml/v3 v3.0.5
 )
 
 require (
