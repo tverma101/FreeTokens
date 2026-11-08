@@ -222,3 +222,38 @@ func TestDesktopRootsPreferXDGConfigHome(t *testing.T) {
 		}
 	}
 }
+
+// Known Freebuff databases that cannot be queried are not mistaken for unrelated Electron state.
+// Other databases must continue contributing measured history in the same scan.
+func TestCorruptKnownDesktopDatabaseDoesNotHideValidProjects(t *testing.T) {
+	root := t.TempDir()
+	bad := filepath.Join(root, "projects", "broken", "desktop-v2.db")
+	if err := os.MkdirAll(filepath.Dir(bad), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bad, []byte("not a SQLite database"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ts := testNow.Add(-2 * time.Minute).UnixMilli()
+	good := filepath.Join(root, "projects", "good", "desktop-v2.db")
+	writeDBAt(t, good, fmt.Sprintf(`%s
+INSERT INTO threads VALUES ('t1', 'deepseek/deepseek-v4-flash', 'codebuff', NULL);
+INSERT INTO messages VALUES ('t1', 1, NULL, %d, '{"usage":{"inputTokens":100,"outputTokens":50}}', 'assistant')`, usageSchema, ts))
+	paths, err := DesktopDatabases([]string{root})
+	if err != nil || !slicesContain(paths, bad) || !slicesContain(paths, good) {
+		t.Fatalf("discovery lost known database: %v, err: %v", paths, err)
+	}
+	s := &DesktopScanner{Roots: []string{root}}
+	for pass := 0; pass < 2; pass++ {
+		fold, err := s.Scan(context.Background(), testNow, testPricing(t), testCatalog(), nil)
+		if err != nil {
+			t.Fatalf("scan %d: %v", pass, err)
+		}
+		if len(fold.Days) != 1 || fold.Days[0].Tokens != 150 {
+			t.Fatalf("scan %d: days = %+v", pass, fold.Days)
+		}
+		if got := s.UnreadableDatabases(); got != 1 {
+			t.Fatalf("scan %d: unreadable databases = %d, want 1", pass, got)
+		}
+	}
+}

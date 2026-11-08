@@ -230,19 +230,29 @@ func isDatabaseName(name string) bool {
 // hasUsageSchema reports whether path holds the two tables the usage projection reads, so a
 // Chromium state file is skipped instead of failing the whole history read.
 func hasUsageSchema(path string) bool {
+	valid, err := inspectUsageSchema(path)
+	// A corrupt/locked known Freebuff database must reach the scanner's coverage warning,
+	// not vanish as though it were an unrelated Chromium state file.
+	return valid || (err != nil && strings.EqualFold(filepath.Base(path), "desktop-v2.db"))
+}
+
+func inspectUsageSchema(path string) (bool, error) {
+	var lastErr error
 	for _, mode := range []string{"ro", "rw"} {
 		db, err := sql.Open("sqlite", sqliteURI(path, mode))
 		if err != nil {
+			lastErr = err
 			continue
 		}
 		var tables int
 		err = db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name IN ('messages', 'threads')`).Scan(&tables)
-		db.Close()
+		_ = db.Close()
 		if err == nil {
-			return tables == 2
+			return tables == 2, nil
 		}
+		lastErr = err
 	}
-	return false
+	return false, lastErr
 }
 
 // uniquePaths drops repeats (Windows' APPDATA and the user config dir are the same directory) and
@@ -447,8 +457,10 @@ type DesktopScanner struct {
 	dbs      map[string]*cachedDB
 	order    []string
 	retained int
-	// unreadable is how many rows the last scan skipped for having no identifier or timestamp.
+	// unreadable counts malformed rows; unreadableDBs counts known Freebuff stores that failed
+	// to open. Both are surfaced separately rather than silently undercounting usage.
 	unreadable int
+	unreadableDBs int
 }
 
 // Unreadable reports how many local history rows the last scan skipped for having no identifier
@@ -457,6 +469,13 @@ func (s *DesktopScanner) Unreadable() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.unreadable
+}
+
+// UnreadableDatabases reports known Freebuff history stores skipped due to read errors.
+func (s *DesktopScanner) UnreadableDatabases() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.unreadableDBs
 }
 
 // HasHistory reports whether any project database exists.
@@ -524,6 +543,7 @@ func (s *DesktopScanner) Scan(ctx context.Context, now time.Time, p *pricing.Sna
 		}
 	}
 	if len(paths) == 0 && len(hosted) == 0 {
+		s.unreadable, s.unreadableDBs = 0, 0
 		return &Fold{Days: []usage.Day{}}, nil
 	}
 	groups := [][]*turn{}
@@ -533,6 +553,7 @@ func (s *DesktopScanner) Scan(ctx context.Context, now time.Time, p *pricing.Sna
 	}
 	groups = append(groups, h)
 	unreadable := 0
+	unreadableDBs := 0
 	for _, path := range paths {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -545,8 +566,14 @@ func (s *DesktopScanner) Scan(ctx context.Context, now time.Time, p *pricing.Sna
 		}
 		rows, err := readDesktopRows(ctx, path)
 		if err != nil {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
 			log.Printf("freebuff desktop history %s: %v", filepath.Base(filepath.Dir(path)), err)
-			return nil, ErrLocalHistory
+			unreadableDBs++
+			delete(s.dbs, path)
+			s.removeOrder(path)
+			continue
 		}
 		var turns []*turn
 		bad := 0
@@ -568,7 +595,7 @@ func (s *DesktopScanner) Scan(ctx context.Context, now time.Time, p *pricing.Sna
 			s.store(path, &cachedDB{before, turns, bad}, maxTurns)
 		}
 	}
-	s.unreadable = unreadable
+	s.unreadable, s.unreadableDBs = unreadable, unreadableDBs
 	if unreadable > 0 {
 		log.Printf("freebuff: %d local history row(s) had no identifier or timestamp and were skipped", unreadable)
 	}

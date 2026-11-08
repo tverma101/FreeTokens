@@ -229,6 +229,7 @@ func (t *Tracker) Refresh(ctx context.Context, interactive bool) *Snapshot {
 	}
 	if t.Desktop != nil {
 		noteUnreadable("Freebuff", "history row(s)", t.Desktop.Unreadable())
+		noteUnreadable("Freebuff", "history database(s)", t.Desktop.UnreadableDatabases())
 	}
 	if t.Antigravity != nil {
 		noteUnreadable("Antigravity", "conversation database(s)", t.Antigravity.Unreadable())
