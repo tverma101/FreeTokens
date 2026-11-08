@@ -163,17 +163,34 @@ func (s *Store) get(ctx context.Context, url string) ([]byte, error) {
 	return io.ReadAll(io.LimitReader(resp.Body, 64<<20))
 }
 
+// writeAtomic preserves the last successfully fetched pricing cache if the
+// destination cannot be replaced. A temporary file is always unique so a
+// concurrent refresh cannot truncate or steal another writer's staging file.
 func writeAtomic(path string, data []byte) error {
+	return writeAtomicWithRename(path, data, os.Rename)
+}
+
+func writeAtomicWithRename(path string, data []byte, rename func(string, string) error) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".freetokens-price-*")
+	if err != nil {
 		return err
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(path)
-		return os.Rename(tmp, path)
+	name := tmp.Name()
+	defer os.Remove(name)
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
 	}
-	return nil
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	// The old offline cache stays intact when Windows refuses a replacement.
+	return rename(name, path)
 }
