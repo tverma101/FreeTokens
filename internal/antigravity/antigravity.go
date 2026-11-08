@@ -51,7 +51,16 @@ type Turn struct {
 	ModelID, Model string
 	Input, Output  int64
 	CacheRead      int64
+	placement      placementKind // retained alongside cached turns so uncertainty survives refresh
 }
+
+type placementKind uint8
+
+const (
+	placementExact placementKind = iota
+	placementApproximate
+	placementReused
+)
 
 type usage3 struct{ input, output, cache int64 }
 
@@ -200,6 +209,19 @@ func (s *Scanner) Scan(ctx context.Context, now time.Time, p *pricing.Snapshot) 
 	for path := range s.cache {
 		if !present[path] {
 			delete(s.cache, path)
+		}
+	}
+	// The fresh reader's counters do not include cache hits. Recompute from retained turns so
+	// cached scans and the rolling history cutoff report the same attribution quality.
+	stats = pairing{}
+	for _, t := range turns {
+		switch t.placement {
+		case placementApproximate:
+			stats.approximate++
+		case placementReused:
+			stats.reused++
+		default:
+			stats.matched++
 		}
 	}
 	s.unreadable, s.paired = unreadable, stats
@@ -403,13 +425,16 @@ func queryConversation(ctx context.Context, path, source, mode string, stats *pa
 			}
 		}
 		at := lastAt
+		placement := placementReused
 		switch {
 		case match >= 0:
 			at = steps[match].at
 			nextStep = match + 1
+			placement = placementExact
 			stats.matched++
 		case nextStep < len(steps):
 			at = steps[nextStep].at
+			placement = placementApproximate
 			stats.approximate++
 		default:
 			stats.reused++
@@ -421,7 +446,7 @@ func queryConversation(ctx context.Context, path, source, mode string, stats *pa
 		turns = append(turns, Turn{
 			At: at, Source: source,
 			ModelID: g.modelID, Model: displayModel(g),
-			Input: g.input, Output: g.output, CacheRead: g.cache,
+			Input: g.input, Output: g.output, CacheRead: g.cache, placement: placement,
 		})
 	}
 	return turns, rows.Err()

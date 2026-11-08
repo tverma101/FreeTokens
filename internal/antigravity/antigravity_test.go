@@ -287,3 +287,39 @@ func TestLiveStepPairing(t *testing.T) {
 	t.Logf("%d conversations (%d unreadable): %d generations matched a step, %d dated at the next step, %d at the previous generation",
 		files, failed, stats.matched, stats.approximate, stats.reused)
 }
+
+// Cached scans must retain uncertainty metadata even when no database has changed.
+func TestPlacementStatsPersistAcrossCachedScans(t *testing.T) {
+	root := t.TempDir()
+	first := time.Date(2026, 11, 5, 12, 0, 0, 0, time.Local)
+	second := first.Add(24 * time.Hour)
+	writeConversation(t, filepath.Join(root, "conversations", "repeat.db"),
+		[][]byte{
+			genBlob("gemini-3.8-flash-n", "Gemini", 100, 20, 30),
+			genBlob("gemini-3.8-flash-n", "Gemini", 500, 60, 70), // no matching timestamp
+			genBlob("gemini-3.8-flash-n", "Gemini", 200, 40, 10),
+		},
+		[][]byte{stepBlob(first, 100, 20, 30), stepBlob(second, 200, 40, 10)})
+	reader := &Scanner{Roots: []Root{{Dir: root, Source: "Antigravity"}}}
+	for scan := 0; scan < 2; scan++ {
+		days, err := reader.Scan(context.Background(), second.Add(time.Hour), testPricing())
+		if err != nil {
+			t.Fatal(err)
+		}
+		approx, reused, total := reader.Placement()
+		if approx != 1 || reused != 0 || total != 3 {
+			t.Fatalf("scan %d: approximate=%d reused=%d total=%d", scan, approx, reused, total)
+		}
+		if len(days) != 2 {
+			t.Fatalf("scan %d: days = %+v", scan, days)
+		}
+	}
+	// Expiring all retained turns must also expire their attribution uncertainty.
+	if _, err := reader.Scan(context.Background(), second.AddDate(0, 0, 35), testPricing()); err != nil {
+		t.Fatal(err)
+	}
+	approx, reused, total := reader.Placement()
+	if approx != 0 || reused != 0 || total != 0 {
+		t.Fatalf("expired placement = %d approximate, %d reused of %d", approx, reused, total)
+	}
+}

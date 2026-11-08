@@ -38,6 +38,7 @@ jobs:
   # Type-checks and builds the popover that the Go binary embeds.
   frontend:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: cmd/freetokens/web
@@ -56,6 +57,8 @@ jobs:
   # tag current distributions ship) instead of it going untested until someone tries it. macOS has
   # no Wails build: its menu bar app is the SwiftUI one in FreeTokens.app, built by the package job.
   gui-build:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:

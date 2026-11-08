@@ -115,8 +115,8 @@ func (a *App) domReady(ctx context.Context) {
 	})
 	x, y := windowPosition(ctx)
 	runtime.WindowSetPosition(ctx, x, y)
-	runtime.WindowShow(ctx)
-	a.setVisible(true)
+	// Keep the popover hidden on startup (including auto-start at login).
+	// Only an explicit tray action should show the window.
 }
 
 func (a *App) shutdown(context.Context) {
