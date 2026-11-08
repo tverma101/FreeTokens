@@ -7,6 +7,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"math"
 	"net/url"
 	"os"
@@ -34,7 +35,7 @@ const Zen = "OpenCode Zen"
 // on Unix, and older Windows builds still write under the home directory.
 func DatabasePath() string {
 	var candidates []string
-	if dir := os.Getenv("XDG_DATA_HOME"); dir != "" {
+	if dir := os.Getenv("XDG_DATA_HOME"); filepath.IsAbs(dir) {
 		candidates = append(candidates, filepath.Join(dir, "opencode", "opencode.db"))
 	}
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
@@ -171,8 +172,8 @@ func readMessages(ctx context.Context, path string) ([]Turn, error) {
 // message kind in its own column instead of inside the JSON. The two hold different sessions, so
 // both are read, and a build that has only one of them is still readable.
 var messageTables = []struct{ query string }{
-	{`SELECT data, time_created, '' FROM message`},
-	{`SELECT data, time_created, type FROM session_message`},
+	{`SELECT id, data, time_created, '' FROM message`},
+	{`SELECT id, data, time_created, type FROM session_message`},
 }
 
 func queryMessages(ctx context.Context, path, mode string) ([]Turn, error) {
@@ -184,20 +185,26 @@ func queryMessages(ctx context.Context, path, mode string) ([]Turn, error) {
 	db.SetMaxOpenConns(1)
 
 	var turns []Turn
+	seen := map[string]bool{}
+	foundTable := false
 	for _, table := range messageTables {
-		got, err := queryTable(ctx, db, table.query)
+		got, err := queryTable(ctx, db, table.query, seen)
 		if err != nil {
 			if strings.Contains(strings.ToLower(err.Error()), "no such table") {
 				continue
 			}
 			return nil, err
 		}
+		foundTable = true
 		turns = append(turns, got...)
+	}
+	if !foundTable {
+		return nil, errors.New("OpenCode history schema has no supported message table")
 	}
 	return turns, nil
 }
 
-func queryTable(ctx context.Context, db *sql.DB, query string) ([]Turn, error) {
+func queryTable(ctx context.Context, db *sql.DB, query string, seen map[string]bool) ([]Turn, error) {
 	rows, err := db.QueryContext(ctx, query)
 	if err != nil {
 		return nil, err
@@ -206,14 +213,23 @@ func queryTable(ctx context.Context, db *sql.DB, query string) ([]Turn, error) {
 
 	var turns []Turn
 	for rows.Next() {
+		var id string
 		var data []byte
 		var created int64
 		var kind string
-		if err := rows.Scan(&data, &created, &kind); err != nil {
+		if err := rows.Scan(&id, &data, &created, &kind); err != nil {
 			return nil, err
+		}
+		// A migration can leave a receipt in both legacy and new tables. Message IDs are
+		// stable across the migration, so count each receipt once rather than both copies.
+		if seen[id] && id != "" {
+			continue
 		}
 		if turn, ok := parseMessage(data, created, kind); ok {
 			turns = append(turns, turn)
+			if id != "" {
+				seen[id] = true
+			}
 		}
 	}
 	return turns, rows.Err()

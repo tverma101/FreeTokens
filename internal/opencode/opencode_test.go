@@ -256,3 +256,37 @@ func TestDatabasePathFindsXDGData(t *testing.T) {
 		t.Fatalf("path = %q, want %q", got, want)
 	}
 }
+
+// A migration may copy a message into the replacement table before deleting its old row.
+// One receipt in both tables must contribute one charge, not two.
+func TestScanDeduplicatesMigratedMessageAcrossSchemas(t *testing.T) {
+	path, db := newDB(t)
+	at := time.Date(2026, 11, 2, 12, 0, 0, 0, time.Local)
+	insert(t, db, "same-id", "assistant", "openai", "gpt-5.1-codex", at, 100, 20, 0, 0)
+	insertV2(t, db, "same-id", "assistant", "openai", "gpt-5.1-codex", at, 100, 20, 0, 0)
+	got, err := (&Scanner{Path: path}).Scan(context.Background(), at.Add(time.Hour), nil)
+	if err != nil || len(got) != 1 || got[0].Tokens != 120 {
+		t.Fatalf("migrated message counted more than once: days=%+v err=%v", got, err)
+	}
+}
+
+// Unknown schema must be an explicit coverage failure: silently returning 0 tokens is misleading.
+func TestScanReportsUnknownOpenCodeSchema(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "opencode.db")
+	db, err := sql.Open("sqlite", filepath.ToSlash(path))
+	if err != nil { t.Fatal(err) }
+	if _, err := db.Exec("CREATE TABLE other_settings(k TEXT)"); err != nil { t.Fatal(err) }
+	if err := db.Close(); err != nil { t.Fatal(err) }
+	if _, err := (&Scanner{Path: path}).Scan(context.Background(), time.Now(), nil); err == nil {
+		t.Fatal("unknown history schema incorrectly returned an empty successful scan")
+	}
+}
+
+// A relative XDG_DATA_HOME is not a valid XDG base directory and should not
+// redirect a background usage scanner into its working directory.
+func TestDatabasePathRejectsRelativeXDGData(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", "relative-data")
+	if got := DatabasePath(); got != "" && !filepath.IsAbs(got) {
+		t.Fatalf("relative XDG database path accepted: %s", got)
+	}
+}
