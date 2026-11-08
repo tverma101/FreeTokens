@@ -182,6 +182,7 @@ func readRollout(ctx context.Context, path string) ([]Turn, error) {
 	// turn, and their per-turn deltas are used instead.
 	var records, deltas []Turn
 	var recordTurnIDs []string
+	var recordHadExactModel []bool
 	modelByTurn := map[string]string{}
 	var activeModel string
 	scanner := bufio.NewScanner(f)
@@ -215,6 +216,7 @@ func readRollout(ctx context.Context, path string) ([]Turn, error) {
 				continue
 			}
 			model := modelByTurn[entry.Payload.TurnID]
+			hadExactModel := model != ""
 			if model == "" {
 				// Older turn_context records can omit turn_id; attribute the receipt to
 				// the model active *at this response*, never the last model in the file.
@@ -226,6 +228,7 @@ func readRollout(ctx context.Context, path string) ([]Turn, error) {
 				CacheWrite: entry.Payload.Usage.CacheWrite, Output: entry.Payload.Usage.Output,
 			})
 			recordTurnIDs = append(recordTurnIDs, entry.Payload.TurnID)
+			recordHadExactModel = append(recordHadExactModel, hadExactModel)
 		case "event_msg":
 			if entry.Payload.Type != "token_count" || !hasTime {
 				continue
@@ -250,8 +253,13 @@ func readRollout(ctx context.Context, path string) ([]Turn, error) {
 		return deltas, nil
 	}
 	for i, turnID := range recordTurnIDs {
-		// If a matching turn context was persisted after the receipt, its explicit
-		// turn ID is stronger evidence than the current active-model fallback.
+		// A turn-scoped model observed at response time is already exact. Never
+		// overwrite earlier responses when the same turn later changes models.
+		if recordHadExactModel[i] {
+			continue
+		}
+		// Otherwise, a context persisted after the response can resolve the ID
+		// more reliably than the active-model fallback from another turn.
 		if model := modelByTurn[turnID]; model != "" {
 			records[i].Model = model
 		}
