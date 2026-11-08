@@ -1,5 +1,5 @@
-// Command freetokens tracks Freebuff hours, sessions and measured token usage from the system tray
-// or the command line.
+// Command freetokens tracks Freebuff hours, sessions and measured token usage from Freebuff,
+// Antigravity, Claude, Codex and OpenCode, from the system tray or the command line.
 package main
 
 import (
@@ -19,10 +19,14 @@ import (
 
 	tzlocal "github.com/thlib/go-timezone-local/tzlocal"
 
+	"github.com/tverma101/FreeTokens/internal/antigravity"
 	"github.com/tverma101/FreeTokens/internal/autostart"
+	"github.com/tverma101/FreeTokens/internal/claude"
+	"github.com/tverma101/FreeTokens/internal/codex"
 	"github.com/tverma101/FreeTokens/internal/config"
 	"github.com/tverma101/FreeTokens/internal/freebuff"
 	"github.com/tverma101/FreeTokens/internal/instance"
+	"github.com/tverma101/FreeTokens/internal/opencode"
 	"github.com/tverma101/FreeTokens/internal/tracker"
 	"github.com/tverma101/FreeTokens/internal/update"
 	"github.com/tverma101/FreeTokens/internal/view"
@@ -35,10 +39,11 @@ var (
 	date    = "unknown"
 )
 
-const usageText = `FreeTokens — unofficial Freebuff usage tracker
+const usageText = `FreeTokens — unofficial Freebuff and Antigravity usage tracker
 
 Usage:
-  freetokens [tray]                 Run in the menu bar / system tray (default with a desktop session)
+  freetokens [gui]                  Open the popover next to the tray icon (default on Windows)
+  freetokens tray                   Run the menu bar / tray menu (default on macOS and Linux)
   freetokens status [--json] [--prompt]
                                     Print hours, sessions and token usage once
   freetokens diagnose               Print setup diagnostics (never prints tokens)
@@ -46,7 +51,7 @@ Usage:
                                     Check GitHub Releases and install a verified newer version
   freetokens config [get | set <key> <value>]
                                     Keys: auto-update (off|notify|auto), refresh-minutes, show-timers (true|false)
-  freetokens autostart [on|off]     Start the tray at login
+  freetokens autostart [on|off]     Start FreeTokens at login
   freetokens version
 
 Environment:
@@ -54,6 +59,10 @@ Environment:
   CODEBUFF_API_KEY       Token fallback used by the Freebuff CLI
   FREETOKENS_CONFIG_DIR  Override FreeTokens' settings directory
   FREETOKENS_CACHE_DIR   Override FreeTokens' cache directory
+  FREETOKENS_HISTORY_DIRS
+                         Extra project roots (or .freebuff directories) to search for Freebuff
+                         history, e.g. ~/work/app ~/work/api; nothing outside the app's own
+                         directories is searched without it
 `
 
 func main() {
@@ -63,14 +72,21 @@ func main() {
 		cmd, args = args[0], args[1:]
 	}
 	if cmd == "" {
-		if hasDesktop() {
-			cmd = "tray"
-		} else {
+		switch {
+		case !hasDesktop():
+			// No window server: a report beats a tray that can never appear.
 			cmd = "status"
+		case runtime.GOOS == "darwin":
+			// macOS ships the SwiftUI menu bar app in FreeTokens.app; the engine only serves it.
+			cmd = "tray"
+		default:
+			cmd = "gui"
 		}
 	}
 	var err error
 	switch cmd {
+	case "gui":
+		err = runGUI()
 	case "tray":
 		err = runTray()
 	case "status":
@@ -100,7 +116,10 @@ func main() {
 // hasDesktop guesses whether a tray can be shown.
 func hasDesktop() bool {
 	switch runtime.GOOS {
-	case "darwin", "windows":
+	case "darwin":
+		// A remote login has no window server, so the popover can't open.
+		return os.Getenv("SSH_CONNECTION") == ""
+	case "windows":
 		return true
 	}
 	return os.Getenv("DISPLAY") != "" || os.Getenv("WAYLAND_DISPLAY") != ""
@@ -176,7 +195,11 @@ func runDiagnose() error {
 	credPath, credErr := auth.CredentialsPath()
 	_, statErr := os.Stat(credPath)
 	a, authErr := auth.Load(false)
-	dbs, _ := freebuff.DesktopDatabases(freebuff.DesktopProjectsDir())
+	dbs, _ := freebuff.DesktopDatabases(freebuff.DesktopRoots())
+	antigravityDBs := antigravity.Databases(antigravity.DefaultRoots())
+	claudeTranscripts := claude.Transcripts(claude.DefaultRoot())
+	codexRollouts := codex.Transcripts(codex.DefaultRoot())
+	opencodeDB := opencode.DatabasePath()
 	authState := "logged in"
 	switch {
 	case authErr != nil:
@@ -185,20 +208,26 @@ func runDiagnose() error {
 		authState = freebuff.ErrNotLoggedIn.Error()
 	}
 	d := map[string]any{
-		"version":           version,
-		"commit":            commit,
-		"os":                runtime.GOOS,
-		"arch":              runtime.GOARCH,
-		"timeZone":          timeZone(),
-		"configFile":        cfgStore.Path,
-		"cacheDir":          cache,
-		"credentialsPath":   credPath,
-		"credentialsExists": credErr == nil && statErr == nil,
-		"tokenFromEnv":      os.Getenv("CODEBUFF_API_KEY") != "",
-		"auth":              authState,
-		"desktopDatabases":  len(dbs),
-		"autostart":         autostart.Enabled(),
-		"settings":          cfgStore.Load(),
+		"version":              version,
+		"commit":               commit,
+		"os":                   runtime.GOOS,
+		"arch":                 runtime.GOARCH,
+		"timeZone":             timeZone(),
+		"configFile":           cfgStore.Path,
+		"cacheDir":             cache,
+		"credentialsPath":      credPath,
+		"credentialsExists":    credErr == nil && statErr == nil,
+		"tokenFromEnv":         os.Getenv("CODEBUFF_API_KEY") != "",
+		"auth":                 authState,
+		"popover":              hasPopover,
+		"desktopDirs":          freebuff.DesktopRoots(),
+		"desktopDatabases":     len(dbs),
+		"antigravityDatabases": len(antigravityDBs),
+		"claudeTranscripts":    len(claudeTranscripts),
+		"codexSessions":        len(codexRollouts),
+		"opencodeDatabase":     opencodeDB,
+		"autostart":            autostart.Enabled(),
+		"settings":             cfgStore.Load(),
 	}
 	if a != nil {
 		t, _, err := newTracker()
@@ -436,7 +465,19 @@ func runAutostart(args []string) error {
 	return errors.New("usage: freetokens autostart [on|off]")
 }
 
-func runTray() error {
+func runTray() error { return runDesktop(frontendTray) }
+
+func runGUI() error { return runDesktop(frontendGUI) }
+
+// frontendKind selects the desktop UI after the shared lock and log setup.
+type frontendKind int
+
+const (
+	frontendTray frontendKind = iota
+	frontendGUI
+)
+
+func runDesktop(kind frontendKind) error {
 	t, cache, err := newTracker()
 	if err != nil {
 		return err
@@ -464,6 +505,10 @@ func runTray() error {
 		return err
 	}
 	detachOwnConsole()
-	runTrayUI(t, cfg)
+	if kind == frontendGUI {
+		runGUIUI(t, cfg)
+	} else {
+		runTrayUI(t, cfg)
+	}
 	return nil
 }

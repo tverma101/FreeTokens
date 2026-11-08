@@ -45,7 +45,7 @@ func receipt(id, model string) Receipt {
 
 func scanReceipts(t *testing.T, catalog map[string]CatalogEntry, p *pricing.Snapshot, rs ...Receipt) []usage.Day {
 	t.Helper()
-	s := &DesktopScanner{Root: t.TempDir()}
+	s := &DesktopScanner{Roots: []string{t.TempDir()}}
 	f, err := s.Scan(context.Background(), testNow, p, catalog, rs)
 	if err != nil {
 		t.Fatal(err)
@@ -168,7 +168,7 @@ func TestInvalidCountsFailInsteadOfUndercounting(t *testing.T) {
 	r := receipt("bad", "m-normal")
 	cached := int64(500) // more cached than input
 	r.Metrics.Usage.CachedInputTokens = &cached
-	s := &DesktopScanner{Root: t.TempDir()}
+	s := &DesktopScanner{Roots: []string{t.TempDir()}}
 	if _, err := s.Scan(context.Background(), testNow, testPricing(t), testCatalog(), []Receipt{r}); err != ErrLocalHistory {
 		t.Fatalf("err = %v, want ErrLocalHistory", err)
 	}

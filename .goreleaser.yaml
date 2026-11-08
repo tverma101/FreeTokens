@@ -1,11 +1,15 @@
-# GoReleaser v2. Runs on a macOS runner: darwin builds need cgo (menu bar + silent Keychain reads);
-# every other target is pure Go (CGO_ENABLED=0) and cross-compiles from the same runner.
+# GoReleaser v2. Runs on a macOS runner. macOS ships FreeTokens.app (the SwiftUI menu bar app) plus
+# the cgo engine inside it, and no Wails build. The Windows popover cross-compiles with
+# CGO_ENABLED=0. Linux, BSD and other targets stay CGO-free and keep the classic tray; build the
+# Linux Wails popover from source (it needs webkit2gtk development headers).
 version: 2
 project_name: freetokens
 
 before:
   hooks:
     - go mod tidy
+    - npm --prefix cmd/freetokens/web ci
+    - npm --prefix cmd/freetokens/web run build
     - go test ./...
     # Windows icon, version info and manifest (cmd/freetokens/rsrc_windows_*.syso, not committed).
     - go run github.com/tc-hib/go-winres@v0.3.3 make --in winres/winres.json --out cmd/freetokens/rsrc --arch amd64,386,arm64 --product-version={{ .Version }} --file-version={{ .Version }}
@@ -25,15 +29,10 @@ builds:
     main: ./cmd/freetokens
     binary: freetokens
     env: [CGO_ENABLED=0]
-    goos: [linux, windows, freebsd, openbsd, netbsd]
+    goos: [linux, freebsd, openbsd, netbsd]
     goarch: [amd64, arm64, arm, "386", riscv64, ppc64le, s390x, loong64]
     goarm: ["6", "7"]
     ignore:
-      - { goos: windows, goarch: arm }
-      - { goos: windows, goarch: riscv64 }
-      - { goos: windows, goarch: ppc64le }
-      - { goos: windows, goarch: s390x }
-      - { goos: windows, goarch: loong64 }
       - { goos: freebsd, goarch: arm }
       - { goos: freebsd, goarch: "386" }
       - { goos: freebsd, goarch: ppc64le }
@@ -56,14 +55,25 @@ builds:
     flags: [-trimpath]
     ldflags: ["-s -w -X main.version={{.Version}} -X main.commit={{.ShortCommit}} -X main.date={{.Date}}"]
 
-  # Same program linked as a Windows GUI app: it starts the tray (or login item) without a console
-  # window. The archive ships it beside freetokens.exe, which stays the command-line tool.
+  # Windows popover. The console-subsystem freetokens.exe stays the CLI and also opens the
+  # popover when started without arguments; freetokensw.exe is the same program with the
+  # windowless subsystem for shortcuts and the login item.
+  - id: windows
+    main: ./cmd/freetokens
+    binary: freetokens
+    env: [CGO_ENABLED=0]
+    goos: [windows]
+    goarch: [amd64, arm64, "386"]
+    tags: [gui, production]
+    flags: [-trimpath]
+    ldflags: ["-s -w -X main.version={{.Version}} -X main.commit={{.ShortCommit}} -X main.date={{.Date}}"]
   - id: windows-gui
     main: ./cmd/freetokens
     binary: freetokensw
     env: [CGO_ENABLED=0]
     goos: [windows]
     goarch: [amd64, arm64, "386"]
+    tags: [gui, production]
     flags: [-trimpath]
     ldflags: ["-s -w -H windowsgui -X main.version={{.Version}} -X main.commit={{.ShortCommit}} -X main.date={{.Date}}"]
 

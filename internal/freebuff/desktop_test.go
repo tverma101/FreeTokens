@@ -60,7 +60,7 @@ INSERT INTO messages VALUES ('other', 1, NULL, %[1]d, '%[2]s', 'assistant')`, ts
 	if len(rows) != 2 {
 		t.Fatalf("rows = %+v (no receipts table: assistant-only fallback expected)", rows)
 	}
-	s := &DesktopScanner{Root: root}
+	s := &DesktopScanner{Roots: []string{root}}
 	f, err := s.Scan(context.Background(), testNow, testPricing(t), testCatalog(), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -93,7 +93,7 @@ CREATE TABLE messages(thread_id TEXT, seq INTEGER, request_id TEXT, ts INTEGER, 
 CREATE TABLE auto_run_decision_receipts(id INTEGER, thread_id TEXT, created_at INTEGER, manager_json TEXT);
 INSERT INTO threads VALUES ('b', 'deepseek/deepseek-v4-flash', 'codebuff', NULL);
 INSERT INTO auto_run_decision_receipts VALUES (1, 'b', %[1]d, '{"harnessId":"codebuff","model":"m-normal","startedAt":%[1]d,"usage":{"inputTokens":20,"outputTokens":10}}')`, ts))
-	s := &DesktopScanner{Root: root}
+	s := &DesktopScanner{Roots: []string{root}}
 	// The hosted copy of cloud:run1 wins over the Desktop row.
 	hosted := receipt("cloud:run1", "m-normal")
 	f, err := s.Scan(context.Background(), testNow, testPricing(t), testCatalog(), []Receipt{hosted})
@@ -106,7 +106,7 @@ INSERT INTO auto_run_decision_receipts VALUES (1, 'b', %[1]d, '{"harnessId":"cod
 }
 
 func TestNoDatabasesAndNoReceiptsIsEmpty(t *testing.T) {
-	s := &DesktopScanner{Root: filepath.Join(t.TempDir(), "missing")}
+	s := &DesktopScanner{Roots: []string{filepath.Join(t.TempDir(), "missing")}}
 	f, err := s.Scan(context.Background(), testNow, testPricing(t), nil, nil)
 	if err != nil || len(f.Days) != 0 {
 		t.Fatalf("f=%+v err=%v", f, err)

@@ -62,21 +62,25 @@ var weekdays = []string{"sunday", "monday", "tuesday", "wednesday", "thursday", 
 
 // Tokens are the separately priced buckets of one receipt.
 type Tokens struct {
-	Input     int64 // uncached input
-	CacheRead int64
-	Output    int64
+	Input      int64 // uncached input
+	CacheWrite int64
+	CacheRead  int64
+	Output     int64
 }
 
 // Cost prices one aggregated receipt. Long-context tiers are never applied: a receipt aggregates
 // several requests, so per-request prompt sizes are unknown.
 func (r Rates) Cost(t Tokens, at time.Time) float64 {
-	in, out, cr := r.Input, r.Output, r.CacheRead
+	in, out, cw, cr := r.Input, r.Output, r.CacheWrite, r.CacheRead
 	if o := r.override(at); o != nil {
 		if o.Input != nil {
 			in = *o.Input
 		}
 		if o.Output != nil {
 			out = *o.Output
+		}
+		if o.CacheWrite != nil {
+			cw = *o.CacheWrite
 		}
 		if o.CacheRead != nil {
 			cr = *o.CacheRead
@@ -85,7 +89,8 @@ func (r Rates) Cost(t Tokens, at time.Time) float64 {
 	if !r.CacheReadExplicit {
 		cr = in
 	}
-	return float64(t.Input)*in/1e6 + float64(t.Output)*out/1e6 + float64(t.CacheRead)*cr/1e6
+	return float64(t.Input)*in/1e6 + float64(t.CacheWrite)*cw/1e6 +
+		float64(t.Output)*out/1e6 + float64(t.CacheRead)*cr/1e6
 }
 
 func (r Rates) override(at time.Time) *UTCOverride {

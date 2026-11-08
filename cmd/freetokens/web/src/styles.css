@@ -1,0 +1,84 @@
+@import "tailwindcss";
+
+@theme {
+  --color-shell: #161512;
+  --color-panel: #1e1c19;
+  --color-raised: #2a2722;
+  --color-line: #3a352e;
+  --color-track: #2f2b26;
+  --color-ink: #f2ede6;
+  --color-muted: #b8afa1;
+  --color-faint: #9a9184;
+  --color-brand: #4cc38a;
+  --color-brand-strong: #7ad8a9;
+  --color-hours: #5b9dff;
+  --color-warn: #e8b45c;
+  --color-danger: #f08a72;
+  --color-slate: #9aa3a8;
+
+  --font-sans:
+    "Segoe UI Variable Text", "Segoe UI", -apple-system, BlinkMacSystemFont, "SF Pro Text",
+    Cantarell, Ubuntu, "Noto Sans", "DejaVu Sans", "Helvetica Neue", Arial, sans-serif;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  overflow: hidden;
+  background: transparent;
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--color-brand) 35%, transparent);
+}
+
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
+
+.scroll-area {
+  scrollbar-width: thin;
+  scrollbar-color: #453f37 transparent;
+}
+
+.scroll-area::-webkit-scrollbar {
+  width: 6px;
+}
+
+.scroll-area::-webkit-scrollbar-thumb {
+  background: #453f37;
+  border-radius: 999px;
+}
+
+*:focus-visible {
+  outline: 2px solid var(--color-brand-strong);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

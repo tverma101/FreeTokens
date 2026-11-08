@@ -119,7 +119,7 @@ func (a *app) onReady() {
 	}
 	systray.AddSeparator()
 	a.usageLabel = disabled("Token usage · cost at public API rates")
-	for _, label := range []string{"Today", "Yesterday", "Last 30 Days"} {
+	for _, label := range []string{"Today", "Yesterday", "Week", "Last 30 Days"} {
 		p := periodItems{head: systray.AddMenuItem(label, "Models used in this period")}
 		for i := 0; i < modelSlots; i++ {
 			it := sub(p.head, "")
