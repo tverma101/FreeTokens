@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"io/fs"
 	"log"
 	"math"
@@ -61,6 +62,8 @@ type Scanner struct {
 type cachedFile struct {
 	size     int64
 	modified time.Time
+	completeUntil int64 // last newline; incomplete tails are replayed on append
+	info     os.FileInfo // distinguish append from delete-and-replace at the same path
 	turns    []Turn
 }
 
@@ -136,7 +139,19 @@ func (s *Scanner) Scan(ctx context.Context, now time.Time, p *pricing.Snapshot) 
 			turns = append(turns, c.turns...)
 			return true
 		}
-		parsed, err := readTranscript(ctx, path)
+		if c := s.cache[path]; c != nil && c.info != nil && os.SameFile(c.info, st) && st.Size() > c.size {
+			// JSONL transcripts are append-heavy. Read only the new suffix, replaying the
+			// last unterminated line if the previous scan ended during a write.
+			more, completeUntil, err := readTranscriptRange(ctx, path, c.completeUntil)
+			if err == nil {
+				parsed := usage.KeepSince(dedupe(append(c.turns, more...)), cutoff, turnTime)
+				turns = append(turns, parsed...)
+				s.cache[path] = &cachedFile{size: st.Size(), modified: st.ModTime(), completeUntil: completeUntil, info: st, turns: parsed}
+				return true
+			}
+			// An unusable tail falls through to a full scan, which also detects rewrites.
+		}
+		parsed, completeUntil, err := readTranscriptRange(ctx, path, 0)
 		if err != nil {
 			unreadable++
 			delete(s.cache, path)
@@ -144,7 +159,7 @@ func (s *Scanner) Scan(ctx context.Context, now time.Time, p *pricing.Snapshot) 
 		}
 		parsed = usage.KeepSince(parsed, cutoff, turnTime)
 		turns = append(turns, parsed...)
-		s.cache[path] = &cachedFile{size: st.Size(), modified: st.ModTime(), turns: parsed}
+		s.cache[path] = &cachedFile{size: st.Size(), modified: st.ModTime(), completeUntil: completeUntil, info: st, turns: parsed}
 		return true
 	})
 	if err := ctx.Err(); err != nil {
@@ -172,24 +187,45 @@ func (s *Scanner) Unreadable() int {
 func turnTime(t Turn) time.Time { return t.At }
 
 func readTranscript(ctx context.Context, path string) ([]Turn, error) {
+	turns, _, err := readTranscriptRange(ctx, path, 0)
+	return turns, err
+}
+
+// readTranscriptRange returns parsed receipts and the last complete newline offset. Unlike
+// starting at the previous file size, this preserves JSONL lines whose writes were interrupted.
+func readTranscriptRange(ctx context.Context, path string, start int64) ([]Turn, int64, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, err
+		return nil, start, err
 	}
 	defer f.Close()
-
+	if _, err := f.Seek(start, io.SeekStart); err != nil {
+		return nil, start, err
+	}
+	reader := bufio.NewReaderSize(f, 64*1024)
 	var turns []Turn
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
-	for scanner.Scan() {
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
+	position, completeUntil := start, start
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, completeUntil, err
 		}
-		if turn, ok := parseLine(scanner.Bytes()); ok {
+		line, readErr := reader.ReadBytes('\n')
+		position += int64(len(line))
+		if len(line) > 16*1024*1024 {
+			return nil, completeUntil, errors.New("Claude transcript line exceeds 16 MiB")
+		}
+		if turn, ok := parseLine(line); ok {
 			turns = append(turns, turn)
 		}
+		if readErr == nil {
+			completeUntil = position
+			continue
+		}
+		if errors.Is(readErr, io.EOF) {
+			return turns, completeUntil, nil
+		}
+		return nil, completeUntil, readErr
 	}
-	return turns, scanner.Err()
 }
 
 type transcriptLine struct {

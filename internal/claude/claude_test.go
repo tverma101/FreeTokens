@@ -199,3 +199,61 @@ func BenchmarkScanCachedHistory(b *testing.B) {
 		}
 	}
 }
+
+// Append-only updates must not parse the full prefix again, and a line interrupted across
+// refreshes must be replayed exactly once after it becomes valid JSON.
+func TestScanAppendsAndReplaysPartialJSONL(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "project", "append.jsonl")
+	now := time.Date(2026, 11, 7, 12, 0, 0, 0, time.Local)
+	first := assistant("one", "claude-sonnet-4-5", now.Add(-time.Hour), 10, 5, 0, 0)
+	second := assistant("two", "claude-sonnet-4-5", now.Add(-time.Minute), 20, 5, 0, 0)
+	writeTranscript(t, path, first)
+	s := &Scanner{Root: root}
+	assertTokens := func(want int64) {
+		t.Helper()
+		days, err := s.Scan(context.Background(), now, nil)
+		if err != nil || len(days) != 1 || days[0].Tokens != want {
+			t.Fatalf("tokens: days=%+v err=%v, want %d", days, err, want)
+		}
+	}
+	assertTokens(15)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil { t.Fatal(err) }
+	half := len(second)/2
+	if _, err := f.WriteString(second[:half]); err != nil { t.Fatal(err) }
+	if err := f.Close(); err != nil { t.Fatal(err) }
+	assertTokens(15)
+	f, err = os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil { t.Fatal(err) }
+	if _, err := f.WriteString(second[half:]+"\n"); err != nil { t.Fatal(err) }
+	if err := f.Close(); err != nil { t.Fatal(err) }
+	assertTokens(40)
+	assertTokens(40)
+	if n := len(s.cache[path].turns); n != 2 { t.Fatalf("cached turns = %d, want 2", n) }
+}
+
+func BenchmarkScanAppendedTranscript(b *testing.B) {
+	root := b.TempDir()
+	path := filepath.Join(root, "project", "append.jsonl")
+	now := time.Date(2026, 11, 7, 12, 0, 0, 0, time.Local)
+	var body strings.Builder
+	for i := 0; i < 4000; i++ {
+		body.WriteString(assistant(fmt.Sprintf("seed_%d", i), "claude-sonnet-4-5", now.Add(-time.Hour), 10, 5, 0, 0))
+		body.WriteByte('\n')
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil { b.Fatal(err) }
+	if err := os.WriteFile(path, []byte(body.String()), 0o600); err != nil { b.Fatal(err) }
+	s := &Scanner{Root: root}
+	if _, err := s.Scan(context.Background(), now, nil); err != nil { b.Fatal(err) }
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+		if err != nil { b.Fatal(err) }
+		_, err = f.WriteString(assistant(fmt.Sprintf("append_%d", i), "claude-sonnet-4-5", now.Add(-time.Minute), 10, 5, 0, 0) + "\n")
+		closeErr := f.Close()
+		if err != nil || closeErr != nil { b.Fatalf("write=%v close=%v", err, closeErr) }
+		if _, err := s.Scan(context.Background(), now, nil); err != nil { b.Fatal(err) }
+	}
+}
