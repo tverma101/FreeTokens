@@ -124,3 +124,48 @@ func TestFoldPricesCachedInputSeparately(t *testing.T) {
 		t.Fatalf("tokens = %d, want 1100000", days[0].Tokens)
 	}
 }
+
+
+// Codex's turn_context.turn_id is optional in the persisted rollout protocol.
+// A model switch in that format must not re-label earlier responses with the final model.
+func TestScanAttributesMissingTurnIDsToModelAtResponseTime(t *testing.T) {
+	root := t.TempDir()
+	at := time.Date(2026, 11, 8, 12, 0, 0, 0, time.Local)
+	writeRollout(t, filepath.Join(root, "2026", "11", "08", "rollout-switch.jsonl"),
+		turnContext(at, "", "gpt-5-codex"),
+		record(at.Add(time.Second), "resp_1", "t1", 100, 0, 0, 0),
+		turnContext(at.Add(2*time.Second), "", "gpt-6-luna"),
+		record(at.Add(3*time.Second), "resp_2", "t2", 200, 0, 0, 0),
+	)
+	days, err := (&Scanner{Root: root}).Scan(context.Background(), at.Add(time.Hour), nil)
+	if err != nil || len(days) != 1 || len(days[0].Models) != 2 {
+		t.Fatalf("model-switch history: days=%+v err=%v", days, err)
+	}
+	byName := map[string]int64{}
+	for _, m := range days[0].Models {
+		byName[m.Name] = m.Tokens
+	}
+	if byName["Codex · GPT 5 Codex"] != 100 || byName["Codex · GPT 6 Luna"] != 200 {
+		t.Fatalf("wrong model attribution: %v", byName)
+	}
+}
+
+// A response preceding its turn_context can be reattributed by an exact turn ID.
+// A response with no matching context must not inherit a later unrelated model.
+func TestReadRolloutLateContextAndUnattributedResponse(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "rollout-late-context.jsonl")
+	at := time.Date(2026, 11, 8, 12, 0, 0, 0, time.Local)
+	writeRollout(t, path,
+		record(at, "resp_early", "t1", 50, 0, 0, 0),
+		record(at.Add(time.Second), "resp_unknown", "t2", 70, 0, 0, 0),
+		turnContext(at.Add(2*time.Second), "t1", "gpt-5-codex"),
+	)
+	turns, err := readRollout(context.Background(), path)
+	if err != nil || len(turns) != 2 {
+		t.Fatalf("rollout turns=%+v err=%v", turns, err)
+	}
+	if turns[0].Model != "gpt-5-codex" || turns[1].Model != "" {
+		t.Fatalf("late context misattributed: turns=%+v", turns)
+	}
+}
