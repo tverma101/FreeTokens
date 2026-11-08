@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"math"
 	"net/url"
 	"os"
@@ -443,8 +442,16 @@ func hostedPage[T any](ctx context.Context, path, cursor string, a Auth, c *Clie
 	return p, nil
 }
 
-// writeFileAtomic writes an owner-only file via rename.
+// writeFileAtomic writes an owner-only staging file, syncs it and renames it over
+// the cache. If replacing the destination fails (e.g. Windows file sharing
+// permissions), the previous cache must stay intact. The next refresh can retry.
 func writeFileAtomic(path string, data []byte) error {
+	return writeFileAtomicWithRename(path, data, os.Rename)
+}
+
+// The rename seam lets tests prove failure safety without relying on host-specific
+// permissions or Windows file locks.
+func writeFileAtomicWithRename(path string, data []byte, rename func(string, string) error) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
@@ -453,23 +460,19 @@ func writeFileAtomic(path string, data []byte) error {
 		return err
 	}
 	name := tmp.Name()
-	_ = tmp.Chmod(0o600)
+	defer os.Remove(name)
 	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		os.Remove(name)
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
 		return err
 	}
 	if err := tmp.Close(); err != nil {
-		os.Remove(name)
 		return err
 	}
-	if err := os.Rename(name, path); err != nil {
-		// Windows cannot rename over an open file; retry after removing the target.
-		_ = os.Remove(path)
-		if err2 := os.Rename(name, path); err2 != nil {
-			os.Remove(name)
-			return errors.Join(err, err2)
-		}
-	}
-	return nil
+	// Never remove the destination on rename failure. A failed cache refresh
+	// is recoverable; deleting the last valid snapshot is not.
+	return rename(name, path)
 }

@@ -2,8 +2,10 @@ package freebuff
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -69,5 +71,43 @@ func TestHostedScannerReadsCumulativeMetricsAndCaches(t *testing.T) {
 	}
 	if _, err := s2.Scan(context.Background(), Auth{Token: "bad"}, c, testNow); err != ErrTokenInvalid {
 		t.Fatalf("err = %v, want ErrTokenInvalid", err)
+	}
+}
+
+
+func TestWriteFileAtomicPreservesLastValidCacheOnRenameError(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "hosted.json")
+	const previous = "{\"accountKey\":\"previous\"}"
+	if err := os.WriteFile(path, []byte(previous), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	renames := 0
+	failure := errors.New("destination in use")
+	err := writeFileAtomicWithRename(path, []byte("{\"accountKey\":\"new\"}"), func(from, to string) error {
+		renames++
+		if to != path {
+			t.Fatalf("unexpected rename destination %q", to)
+		}
+		// Simulate a locked destination without deleting or modifying it.
+		return failure
+	})
+	if !errors.Is(err, failure) || renames != 1 {
+		t.Fatalf("rename error = %v, attempts = %d; want original failure and one attempt", err, renames)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil || string(got) != previous {
+		t.Fatalf("valid cached history lost after rename failure: content=%q err=%v", got, err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) != 1 || entries[0].Name() != "hosted.json" {
+		t.Fatalf("failed staging file leaked: entries=%+v err=%v", entries, err)
+	}
+	if err := writeFileAtomic(path, []byte("{\"accountKey\":\"new\"}")); err != nil {
+		t.Fatalf("later retry failed: %v", err)
+	}
+	got, err = os.ReadFile(path)
+	if err != nil || string(got) != "{\"accountKey\":\"new\"}" {
+		t.Fatalf("retry did not replace cached history: content=%q err=%v", got, err)
 	}
 }
