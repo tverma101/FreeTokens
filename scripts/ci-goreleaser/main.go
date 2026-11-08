@@ -16,7 +16,7 @@ var smokeTargets = map[string][]string{
 	"darwin":     {"darwin_amd64_v1", "darwin_arm64_v8.0"},
 	"portable":   {"linux_amd64_v1", "linux_arm64_v8.0"},
 	"windows":    {"windows_amd64_v1", "windows_arm64_v8.0"},
-	"windows-gui":{"windows_amd64_v1", "windows_arm64_v8.0"},
+	"windows-gui": {"windows_amd64_v1", "windows_arm64_v8.0"},
 }
 
 func nodeValue(mapping *yaml.Node, key string) *yaml.Node {
