@@ -106,7 +106,7 @@ func (s *Scanner) Scan(ctx context.Context, now time.Time, p *pricing.Snapshot) 
 		s.cache.turns = usage.KeepSince(s.cache.turns, cutoff, turnTime)
 		return Fold(s.cache.turns, now, p), nil
 	}
-	turns, err := readMessages(ctx, s.Path)
+	turns, err := readMessages(ctx, s.Path, cutoff)
 	if err != nil {
 		return nil, err
 	}
@@ -147,10 +147,10 @@ func sqliteURI(path, mode string) string {
 
 // readMessages opens the database read-only, falling back to a writable handle only when a running
 // OpenCode has left it in a state SQLite refuses to open read-only. Nothing is ever written.
-func readMessages(ctx context.Context, path string) ([]Turn, error) {
+func readMessages(ctx context.Context, path string, cutoff time.Time) ([]Turn, error) {
 	var lastErr error
 	for _, mode := range []string{"ro", "rw"} {
-		turns, err := queryMessages(ctx, path, mode)
+		turns, err := queryMessages(ctx, path, mode, cutoff)
 		if err == nil {
 			return turns, nil
 		}
@@ -169,14 +169,18 @@ func readMessages(ctx context.Context, path string) ([]Turn, error) {
 
 // messageTables lists the storage OpenCode has used for one conversation message. Sessions from
 // before its v2 session schema live in message; newer ones live in session_message, which keeps the
-// message kind in its own column instead of inside the JSON. The two hold different sessions, so
-// both are read, and a build that has only one of them is still readable.
+// message kind in its own column instead of inside the JSON. Both are read for compatibility.
+//
+// Filter before retrieving JSON payloads, not after decoding them. OpenCode's newer message table
+// has a time_created index, so a long-running user only pays to read recent receipts.
+// The <= 0 branch preserves legacy rows whose timestamp lives inside the JSON instead of the
+// time_created column (parseMessage already supports that fallback).
 var messageTables = []struct{ query string }{
-	{`SELECT id, data, time_created, '' FROM message`},
-	{`SELECT id, data, time_created, type FROM session_message`},
+	{`SELECT id, data, time_created, '' FROM message WHERE time_created >= ? OR time_created <= 0`},
+	{`SELECT id, data, time_created, type FROM session_message WHERE time_created >= ? OR time_created <= 0`},
 }
 
-func queryMessages(ctx context.Context, path, mode string) ([]Turn, error) {
+func queryMessages(ctx context.Context, path, mode string, cutoff time.Time) ([]Turn, error) {
 	db, err := sql.Open("sqlite", sqliteURI(path, mode))
 	if err != nil {
 		return nil, err
@@ -188,7 +192,7 @@ func queryMessages(ctx context.Context, path, mode string) ([]Turn, error) {
 	seen := map[string]bool{}
 	foundTable := false
 	for _, table := range messageTables {
-		got, err := queryTable(ctx, db, table.query, seen)
+		got, err := queryTable(ctx, db, table.query, cutoff.UnixMilli(), seen)
 		if err != nil {
 			if strings.Contains(strings.ToLower(err.Error()), "no such table") {
 				continue
@@ -204,8 +208,8 @@ func queryMessages(ctx context.Context, path, mode string) ([]Turn, error) {
 	return turns, nil
 }
 
-func queryTable(ctx context.Context, db *sql.DB, query string, seen map[string]bool) ([]Turn, error) {
-	rows, err := db.QueryContext(ctx, query)
+func queryTable(ctx context.Context, db *sql.DB, query string, cutoffMillis int64, seen map[string]bool) ([]Turn, error) {
+	rows, err := db.QueryContext(ctx, query, cutoffMillis)
 	if err != nil {
 		return nil, err
 	}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -288,5 +289,106 @@ func TestDatabasePathRejectsRelativeXDGData(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", "relative-data")
 	if got := DatabasePath(); got != "" && !filepath.IsAbs(got) {
 		t.Fatalf("relative XDG database path accepted: %s", got)
+	}
+}
+
+
+// Query-side filtering is important: retaining only 30 days *after* decoding
+// would repeatedly read every archived message's JSON on a busy OpenCode install.
+func TestQueryMessagesOnlyReadsDisplayedWindow(t *testing.T) {
+	path, db := newDB(t)
+	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.Local)
+	old := now.AddDate(-1, 0, 0)
+	recent := now.Add(-time.Hour)
+	insert(t, db, "legacy-old", "assistant", "openai", "gpt-5.1-codex", old, 4000, 0, 0, 0)
+	insert(t, db, "legacy-new", "assistant", "openai", "gpt-5.1-codex", recent, 12, 0, 0, 0)
+	insertV2(t, db, "v2-old", "assistant", "openai", "gpt-5.1-codex", old, 4000, 0, 0, 0)
+	insertV2(t, db, "v2-new", "assistant", "openai", "gpt-5.1-codex", recent, 13, 0, 0, 0)
+	turns, err := readMessages(context.Background(), path, usage.HistoryCutoff(now))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(turns) != 2 {
+		t.Fatalf("got %d source rows, want two recent receipts", len(turns))
+	}
+	var tokens int64
+	for _, turn := range turns {
+		if turn.At.Before(usage.HistoryCutoff(now)) {
+			t.Fatalf("archived row reached the JSON decoder: %+v", turn)
+		}
+		tokens += turn.Input
+	}
+	if tokens != 25 {
+		t.Fatalf("recent tokens = %d, want 25", tokens)
+	}
+}
+
+// Old schemas can have a valid JSON event time but a missing column value.
+// Retain this pre-existing fallback when applying the indexed cutoff.
+func TestQueryMessagesRetainsEmbeddedTimestampFallback(t *testing.T) {
+	path, db := newDB(t, "message")
+	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.Local)
+	at := now.Add(-time.Hour)
+	data := fmt.Sprintf(`{"role":"assistant","modelID":"gpt-5.1-codex","tokens":{"input":42},"time":{"created":%d}}`, at.UnixMilli())
+	if _, err := db.Exec(`INSERT INTO message(id, data, time_created) VALUES (?, ?, 0)`, "embedded-only", data); err != nil {
+		t.Fatal(err)
+	}
+	turns, err := readMessages(context.Background(), path, usage.HistoryCutoff(now))
+	if err != nil || len(turns) != 1 || turns[0].Input != 42 || !turns[0].At.Equal(at.Truncate(time.Millisecond)) {
+		t.Fatalf("embedded-time receipt lost: turns=%+v err=%v", turns, err)
+	}
+}
+
+// This benchmark isolates a changed OpenCode DB from its unchanged-file cache.
+// Its older JSON rows contain extra payload that should never leave SQLite.
+func BenchmarkReadMessagesActiveWindow(b *testing.B) {
+	path := filepath.Join(b.TempDir(), "opencode.db")
+	db, err := sql.Open("sqlite", filepath.ToSlash(path))
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(fixtureTables["message"]); err != nil {
+		b.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE INDEX message_time_created_idx ON message(time_created)`); err != nil {
+		b.Fatal(err)
+	}
+	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.Local)
+	old := now.AddDate(-1, 0, 0)
+	recent := now.Add(-time.Hour)
+	tx, err := db.Begin()
+	if err != nil {
+		b.Fatal(err)
+	}
+	stmt, err := tx.Prepare(`INSERT INTO message(id, data, time_created) VALUES (?, ?, ?)`)
+	if err != nil {
+		b.Fatal(err)
+	}
+	padding := strings.Repeat("x", 2048)
+	for i := 0; i < 3000; i++ {
+		payload := fmt.Sprintf(`{"role":"assistant","modelID":"gpt-5.1-codex","tokens":{"input":10},"extra":%q}`, padding)
+		if _, err := stmt.Exec(fmt.Sprintf("archived-%d", i), payload, old.UnixMilli()); err != nil {
+			b.Fatal(err)
+		}
+	}
+	for i := 0; i < 20; i++ {
+		if _, err := stmt.Exec(fmt.Sprintf("recent-%d", i), `{"role":"assistant","modelID":"gpt-5.1-codex","tokens":{"input":10}}`, recent.UnixMilli()); err != nil {
+			b.Fatal(err)
+		}
+	}
+	if err := stmt.Close(); err != nil {
+		b.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		turns, err := readMessages(context.Background(), path, usage.HistoryCutoff(now))
+		if err != nil || len(turns) != 20 {
+			b.Fatalf("windowed read: turns=%d err=%v", len(turns), err)
+		}
 	}
 }
