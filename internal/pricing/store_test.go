@@ -43,18 +43,36 @@ func TestPricingCacheKeepsLastGoodCopyWhenRenameFails(t *testing.T) {
 	}
 }
 
+// A failed rename is expected to return a recoverable error on some operating
+// systems. Verify the staging paths are distinct without requiring concurrent
+// replacement of the same destination to succeed on Windows.
 func TestPricingCacheConcurrentWritersUsePrivateStagingFiles(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "pricing_supplement.json")
 	const count = 12
 	var wg sync.WaitGroup
+	var mu sync.Mutex
+	seen := map[string]bool{}
+	failure := errors.New("deliberate staging test rejection")
 	errorsByWriter := make(chan error, count)
 	for i := 0; i < count; i++ {
 		wg.Add(1)
 		go func(n int) {
 			defer wg.Done()
-			data := []byte{byte('a' + n)}
-			if err := writeAtomic(path, data); err != nil {
+			err := writeAtomicWithRename(path, []byte{byte('a' + n)}, func(from, to string) error {
+				if to != path {
+					return errors.New("unexpected target")
+				}
+				mu.Lock()
+				if seen[from] {
+					mu.Unlock()
+					return errors.New("reused staging filename")
+				}
+				seen[from] = true
+				mu.Unlock()
+				return failure
+			})
+			if !errors.Is(err, failure) {
 				errorsByWriter <- err
 			}
 		}(i)
@@ -62,17 +80,13 @@ func TestPricingCacheConcurrentWritersUsePrivateStagingFiles(t *testing.T) {
 	wg.Wait()
 	close(errorsByWriter)
 	for err := range errorsByWriter {
-		t.Errorf("concurrent cache write failed: %v", err)
+		t.Errorf("staging path was not unique: %v", err)
 	}
-	if t.Failed() {
-		return
-	}
-	b, err := os.ReadFile(path)
-	if err != nil || len(b) != 1 || b[0] < 'a' || b[0] >= 'a'+count {
-		t.Fatalf("cache output corrupted: got=%q err=%v", b, err)
+	if len(seen) != count {
+		t.Errorf("got %d distinct staging paths, want %d", len(seen), count)
 	}
 	entries, err := os.ReadDir(dir)
-	if err != nil || len(entries) != 1 || entries[0].Name() != "pricing_supplement.json" {
-		t.Fatalf("staging files leaked: entries=%+v err=%v", entries, err)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("failed staging writes leaked files: entries=%+v err=%v", entries, err)
 	}
 }
