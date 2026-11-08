@@ -181,6 +181,7 @@ func readRollout(ctx context.Context, path string) ([]Turn, error) {
 	// is resolved after the whole file is read. Older sessions only report the running total per
 	// turn, and their per-turn deltas are used instead.
 	var records, deltas []Turn
+	var recordTurnIDs []string
 	modelByTurn := map[string]string{}
 	var activeModel string
 	scanner := bufio.NewScanner(f)
@@ -213,11 +214,18 @@ func readRollout(ctx context.Context, path string) ([]Turn, error) {
 			if total, ok := tokens(entry.Payload.Usage); !ok || total <= 0 {
 				continue
 			}
+			model := modelByTurn[entry.Payload.TurnID]
+			if model == "" {
+				// Older turn_context records can omit turn_id; attribute the receipt to
+				// the model active *at this response*, never the last model in the file.
+				model = activeModel
+			}
 			records = append(records, Turn{
-				At: at, ResponseID: entry.Payload.ResponseID, Model: modelByTurn[entry.Payload.TurnID],
+				At: at, ResponseID: entry.Payload.ResponseID, Model: model,
 				Input: entry.Payload.Usage.Input, Cached: entry.Payload.Usage.Cached,
 				CacheWrite: entry.Payload.Usage.CacheWrite, Output: entry.Payload.Usage.Output,
 			})
+			recordTurnIDs = append(recordTurnIDs, entry.Payload.TurnID)
 		case "event_msg":
 			if entry.Payload.Type != "token_count" || !hasTime {
 				continue
@@ -241,11 +249,15 @@ func readRollout(ctx context.Context, path string) ([]Turn, error) {
 	if len(records) == 0 {
 		return deltas, nil
 	}
-	for i := range records {
-		if records[i].Model == "" {
-			records[i].Model = activeModel
+	for i, turnID := range recordTurnIDs {
+		// If a matching turn context was persisted after the receipt, its explicit
+		// turn ID is stronger evidence than the current active-model fallback.
+		if model := modelByTurn[turnID]; model != "" {
+			records[i].Model = model
 		}
 	}
+	// Without either a turn-scoped context or an active model at response time,
+	// leave the model unknown rather than attributing it to an unrelated later turn.
 	return records, nil
 }
 
