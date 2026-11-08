@@ -105,11 +105,16 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: cmd/freetokens/web/package-lock.json
+      # CI only packages the six platform archives exercised by install-smoke, rather than
+      # building every supported Go port. Tagged releases still use the unmodified full
+      # .goreleaser.yaml in release.yml.
+      - name: Generate limited snapshot config from release config
+        run: go run ./scripts/ci-goreleaser .goreleaser.yaml "$RUNNER_TEMP/freetokens-ci.yaml"
       - uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
           version: "~> v2"
-          args: release --snapshot --clean
+          args: release --snapshot --clean --config ${{ runner.temp }}/freetokens-ci.yaml
       - name: Add the macOS app zip
         run: cp dist-app/FreeTokens-*-macOS.zip dist/
       - uses: actions/upload-artifact@v4
