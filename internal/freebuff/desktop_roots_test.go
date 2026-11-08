@@ -257,3 +257,28 @@ INSERT INTO messages VALUES ('t1', 1, NULL, %d, '{"usage":{"inputTokens":100,"ou
 		}
 	}
 }
+
+func TestCorruptPreviouslyCachedDatabaseReleasesCacheBudget(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "projects", "was-valid", "desktop-v2.db")
+	ts := testNow.Add(-time.Minute).UnixMilli()
+	writeDBAt(t, path, fmt.Sprintf(`%s
+INSERT INTO threads VALUES ('t1', 'deepseek/deepseek-v4-flash', 'codebuff', NULL);
+INSERT INTO messages VALUES ('t1', 1, NULL, %d, '{"usage":{"inputTokens":100,"outputTokens":50}}', 'assistant')`, usageSchema, ts))
+	s := &DesktopScanner{Roots: []string{root}}
+	if _, err := s.Scan(context.Background(), testNow, testPricing(t), testCatalog(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if s.retained == 0 {
+		t.Fatal("fixture did not populate the cache")
+	}
+	if err := os.WriteFile(path, []byte("corrupt"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Scan(context.Background(), testNow, testPricing(t), testCatalog(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if s.UnreadableDatabases() != 1 || s.retained != 0 || len(s.dbs) != 0 {
+		t.Fatalf("cache not released: unreadable=%d retained=%d cached=%d", s.UnreadableDatabases(), s.retained, len(s.dbs))
+	}
+}

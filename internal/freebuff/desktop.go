@@ -571,8 +571,11 @@ func (s *DesktopScanner) Scan(ctx context.Context, now time.Time, p *pricing.Sna
 			}
 			log.Printf("freebuff desktop history %s: %v", filepath.Base(filepath.Dir(path)), err)
 			unreadableDBs++
-			delete(s.dbs, path)
-			s.removeOrder(path)
+			if old := s.dbs[path]; old != nil {
+				s.retained -= len(old.turns)
+				delete(s.dbs, path)
+				s.removeOrder(path)
+			}
 			continue
 		}
 		var turns []*turn

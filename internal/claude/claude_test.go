@@ -257,3 +257,19 @@ func BenchmarkScanAppendedTranscript(b *testing.B) {
 		if _, err := s.Scan(context.Background(), now, nil); err != nil { b.Fatal(err) }
 	}
 }
+
+func TestReadTranscriptRangeHandlesLongLinesWithoutUnboundedBuffer(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "p", "large.jsonl")
+	now := time.Date(2026, 11, 7, 12, 0, 0, 0, time.Local)
+	longModel := strings.Repeat("x", 130*1024)
+	writeTranscript(t, path, assistant("long", longModel, now.Add(-time.Hour), 10, 5, 0, 0))
+	turns, end, err := readTranscriptRange(context.Background(), path, 0)
+	if err != nil || len(turns) != 1 || turns[0].Model != longModel {
+		t.Fatalf("fragmented line lost: len=%d err=%v", len(turns), err)
+	}
+	info, err := os.Stat(path)
+	if err != nil || end != info.Size() {
+		t.Fatalf("last complete offset = %d, want %d (stat error: %v)", end, info.Size(), err)
+	}
+}

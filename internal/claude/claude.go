@@ -132,14 +132,14 @@ func (s *Scanner) Scan(ctx context.Context, now time.Time, p *pricing.Snapshot) 
 			delete(s.cache, path)
 			return true
 		}
-		if c := s.cache[path]; c != nil && c.size == st.Size() && c.modified.Equal(st.ModTime()) {
+		if c := s.cache[path]; c != nil && c.info != nil && os.SameFile(c.info, st) && c.size == st.Size() && c.modified.Equal(st.ModTime()) {
 			// An unchanged file is only re-read when it changes, so its cached turns are pruned here
 			// to keep the retained history bounded as days pass.
 			c.turns = usage.KeepSince(c.turns, cutoff, turnTime)
 			turns = append(turns, c.turns...)
 			return true
 		}
-		if c := s.cache[path]; c != nil && c.info != nil && os.SameFile(c.info, st) && st.Size() > c.size {
+		if c := s.cache[path]; c != nil && c.info != nil && os.SameFile(c.info, st) && st.Size() > c.size && c.completeUntil <= st.Size() {
 			// JSONL transcripts are append-heavy. Read only the new suffix, replaying the
 			// last unterminated line if the previous scan ended during a write.
 			more, completeUntil, err := readTranscriptRange(ctx, path, c.completeUntil)
@@ -205,18 +205,26 @@ func readTranscriptRange(ctx context.Context, path string, start int64) ([]Turn,
 	reader := bufio.NewReaderSize(f, 64*1024)
 	var turns []Turn
 	position, completeUntil := start, start
+	var line []byte
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil, completeUntil, err
 		}
-		line, readErr := reader.ReadBytes('\n')
-		position += int64(len(line))
-		if len(line) > 16*1024*1024 {
+		// ReadSlice caps each fragment at the reader buffer size. ReadBytes can allocate an
+		// unbounded tool-payload line before checking its length; do not do that on agent logs.
+		chunk, readErr := reader.ReadSlice('\n')
+		position += int64(len(chunk))
+		if len(line)+len(chunk) > 16*1024*1024 {
 			return nil, completeUntil, errors.New("Claude transcript line exceeds 16 MiB")
+		}
+		line = append(line, chunk...)
+		if errors.Is(readErr, bufio.ErrBufferFull) {
+			continue
 		}
 		if turn, ok := parseLine(line); ok {
 			turns = append(turns, turn)
 		}
+		line = line[:0]
 		if readErr == nil {
 			completeUntil = position
 			continue
